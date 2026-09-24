@@ -1,0 +1,416 @@
+{% extends "base.html" %}
+{% block title %}LCR 600 Simulator{% endblock %}
+{% block view_toggle %}{% include "_view_toggle.html" %}{% endblock %}
+{% block content %}
+<div id="transientError" style="position:fixed; top:70px; right:24px; background:var(--accent-red); color:#fff; padding:8px 14px; border-radius:8px; font-size:13px; opacity:0; transition:opacity 0.3s; z-index:100; pointer-events:none;"></div>
+
+<div class="sim-layout">
+
+  <div class="instrument-col">
+
+    <!-- ---------- ORIGINAL VIEW ---------- -->
+    <div class="ov-root active" id="ovRoot">
+      <div class="ov-device">
+        <div class="ov-seal" id="ovSeal" title="Click to toggle the Weights & Measures tamper seal">
+          <div class="ov-seal-wire"></div>
+          <div class="ov-seal-bolt"></div>
+          <span class="ov-seal-label">UNSEALED</span>
+        </div>
+        <div class="ov-titlebar">LectroCount LCR 600</div>
+        <div class="ov-screen-frame">
+          <div class="ov-lcd ov-lcr600-screen" id="ovLcd">
+            <div class="ov-lcriq-topicons">
+              <span id="ovTopLeft">LC</span>
+              <span id="ovTopRight"></span>
+            </div>
+            <div class="ov-lcriq-statusline" id="ovStatusLine" style="margin-top:6px; color: var(--lcd-digit);">PROD 1</div>
+            <div class="ov-lcd-digits" id="ovLcdMain" style="font-size:38px; margin-top:6px;">000000</div>
+          </div>
+        </div>
+        <div class="ov-lcr600-controlrow">
+          <div class="ov-lcr600-rotary-box">
+            <div class="ov-rotary-wrap">
+              <div class="ov-rotary" id="ovRotary">
+                <div class="ov-rotary-labels" id="ovRotaryLabels"></div>
+                <div class="ov-rotary-knob" id="ovRotaryKnob"></div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="ov-keypad-grid" id="ovKeypadGrid"></div>
+            <div class="ov-rotary-hint" style="margin-top:6px;">Drag dial to turn &middot; tap keys to navigate</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- CUSTOM VIEW ---------- -->
+    <div class="cv-root hidden" id="cvRoot">
+      <div class="instrument">
+        <div class="instrument-plate"><strong>LectroCount LCR 600</strong> &middot; Series E3708/E3709</div>
+        <div class="lcd-screen" style="min-height:130px;">
+          <div class="lcd-readout small" id="lcdMain">DELIVERY TOTAL</div>
+          <div class="lcd-readout" id="lcdValue" style="margin-top:4px;">0.0</div>
+          <div class="lcd-sub"><span id="lcdSubLabel">PROD 1</span><span id="lcdUnits">GAL</span></div>
+          <div class="lcd-status-row" id="lcdChips"></div>
+        </div>
+        <div class="selector-dial" id="selectorDial">
+          <div class="selector-dial-knob" id="dialKnob"></div>
+        </div>
+        <div class="muted" style="text-align:center; font-size: 11px; margin-top: 8px;">Selector switch &middot; click a position to turn the dial</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="deck-scroll">
+    <div id="errorBanner"></div>
+    <div class="deck">
+
+      <div class="card">
+        <h2>Screen Navigation <span class="hint">full-screen menu model</span></h2>
+        <div class="tab-bar" id="screenTabs"></div>
+        <div id="screenBody"></div>
+      </div>
+
+      <div class="card">
+        <h2>Delivery</h2>
+        <div class="btn-bar">
+          <button class="btn run" id="runBtn">Selector &rarr; RUN</button>
+          <button class="btn stop" id="stopBtn">Selector &rarr; STOP</button>
+          <button class="btn" id="printBtn">Selector &rarr; PRINT</button>
+        </div>
+        <div class="field-row" style="margin-top:12px;"><label>Preset (units)</label><input type="number" id="presetInput" placeholder="none" step="0.1"></div>
+        <div class="btn-bar"><button class="btn" id="setPresetBtn">Set Preset</button><button class="btn" id="clearPresetBtn">Clear</button></div>
+      </div>
+
+      <div class="card">
+        <h2>Product &amp; Pulser</h2>
+        <div class="product-pill-row" id="productPills"></div>
+        <div class="field-row">
+          <label>Pulser mode</label>
+          <select id="pulserMode">
+            <option value="idle">Idle (no flow)</option>
+            <option value="flowing">Flowing</option>
+            <option value="vibration">Flowing (vibration / jitter)</option>
+            <option value="stalled">Stalled (fault)</option>
+          </select>
+        </div>
+        <div class="field-row"><label>Flow rate (units/min)</label><input type="number" id="flowRate" value="60" min="0" step="1"></div>
+        <div class="gauge-row" style="margin-top:10px;">
+          <div class="gauge"><div class="label">Pulses (total)</div><div class="val" id="gaugePulses">0</div></div>
+          <div class="gauge"><div class="label">k-Factor</div><div class="val" id="gaugeK">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Point of Sale <span class="hint">tax categories &amp; cash discounting</span></h2>
+        <div class="field-row"><label>Price per unit ($)</label><input type="number" id="priceInput" step="0.001" value="0"></div>
+        <div class="btn-bar"><button class="btn" id="setPriceBtn">Set Price</button></div>
+        <div style="margin-top:14px; border-top:1px solid var(--ui-border); padding-top:14px;">
+          <div class="field-row"><label>Tax line</label><select id="taxLetter"><option>A</option><option>B</option><option>C</option><option>D</option><option>E</option></select></div>
+          <div class="field-row"><label>Tax type</label>
+            <select id="taxType">
+              <option value="NOT_USED">Not Used</option>
+              <option value="PERCENT">Percent of subtotal</option>
+              <option value="PER_UNIT">Per unit delivered</option>
+              <option value="TAX_ON_TAX">Tax on tax</option>
+            </select>
+          </div>
+          <div class="field-row"><label>Value (% or $/unit)</label><input type="number" id="taxValue" step="0.01" value="0"></div>
+          <div class="btn-bar"><button class="btn" id="setTaxLineBtn">Set Tax Line</button></div>
+          <table class="diag-table" id="taxTable" style="margin-top:10px;"></table>
+        </div>
+        <div class="btn-bar" style="margin-top:14px;"><button class="btn primary" id="buildTicketBtn">Build Priced + Taxed Ticket</button></div>
+      </div>
+
+      <div class="card">
+        <h2>Calibration <span class="hint" id="lockHint">k-Factor / VCF</span></h2>
+        <div class="field-row"><label>Prover quantity</label><input type="number" id="proverQty" step="0.01" placeholder="e.g. 50.00"></div>
+        <div class="btn-bar"><button class="btn primary" id="recalBtn">Recalibrate from Prover</button></div>
+        <div id="calResult" class="muted mono" style="font-size:12px; margin-top:8px;"></div>
+        <div style="margin-top:16px; border-top:1px solid var(--ui-border); padding-top:14px;">
+          <div class="field-row"><label>VCF type</label><select id="vcfType"></select></div>
+          <div class="field-row"><label id="vcfParamLabel">Parameter</label><input type="number" id="vcfParam" step="0.0001"></div>
+          <div class="muted" style="font-size:11.5px;" id="vcfRange"></div>
+          <div class="btn-bar"><button class="btn" id="setVcfBtn">Apply VCF</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Environment / Fault Injection</h2>
+        <div class="field-row"><label>True liquid temp (&deg;C)</label><input type="number" id="trueTempC" step="0.1" value="15"></div>
+        <div class="btn-bar">
+          <button class="btn" id="applyTempBtn">Apply Temp</button>
+          <button class="btn danger" id="disconnectRtdBtn">Disconnect RTD</button>
+          <button class="btn" id="reconnectRtdBtn">Reconnect RTD</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Diagnostics</h2>
+        <table class="diag-table" id="diagTable"></table>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+window.PRODUCT_KEY = "lcr600";
+
+const SELECTOR_KEYS = ["RUN", "STOP", "PRINT", "SHIFT_PRINT", "CALIBRATION"];
+const SELECTOR_ANGLES_CV = { RUN: -90, STOP: -18, PRINT: 54, SHIFT_PRINT: 126, CALIBRATION: 198 };
+const ROTARY_POSITIONS_OV = [
+  { key: "RUN", angleDeg: 0 }, { key: "STOP", angleDeg: 72 }, { key: "PRINT", angleDeg: 144 },
+  { key: "SHIFT_PRINT", angleDeg: 216 }, { key: "CALIBRATION", angleDeg: 288 },
+];
+let ovRotaryCtl = null;
+
+/* The real LCR-600 keypad: 2 rows x 5 numeric/letter keys, plus a narrow
+   4-key nav column (up, down, prev/esc, next/enter) -- see the install
+   manual's own front-view dimensions photo this is built from. */
+const KEYPAD_LAYOUT = [
+  ["1","2","3","4","5"], ["6","7","8","9","0"],
+];
+const KEY_SUBLABELS = { "1":"_", "2":"abc", "3":"def", "4":"ghi", "5":"jkl", "6":"mno", "7":"pqrs", "8":"tuv", "9":"wxyz", "0":"+" };
+
+function buildOvRotaryLabels() {
+  const wrap = document.getElementById("ovRotaryLabels");
+  ROTARY_POSITIONS_OV.forEach(p => {
+    const rad = p.angleDeg * Math.PI / 180;
+    const r = 38;
+    const cx = 50 + r * Math.sin(rad);
+    const cy = 50 - r * Math.cos(rad);
+    const el = document.createElement("div");
+    el.className = "ov-rotary-label";
+    el.dataset.pos = p.key;
+    el.style.left = (cx - 24) + "px";
+    el.style.top = (cy - 5) + "px";
+    el.style.width = "48px";
+    el.style.fontSize = "6.5px";
+    el.textContent = p.key.replace("_", " ");
+    wrap.appendChild(el);
+  });
+}
+function highlightOvLabel(key) {
+  document.querySelectorAll(".ov-rotary-label").forEach(el => el.classList.toggle("lit", el.dataset.pos === key));
+}
+
+function buildKeypad() {
+  const grid = document.getElementById("ovKeypadGrid");
+  KEYPAD_LAYOUT.forEach((row, rIdx) => {
+    row.forEach(k => {
+      const btn = document.createElement("button");
+      btn.className = "ov-key";
+      btn.innerHTML = `${k}<span class="sub">${KEY_SUBLABELS[k] || ""}</span>`;
+      btn.addEventListener("click", () => sendKeypadChar(k));
+      grid.appendChild(btn);
+    });
+    if (rIdx === 0) {
+      const navUp = document.createElement("button");
+      navUp.className = "ov-key nav"; navUp.textContent = "^"; navUp.title = "Prev / Esc";
+      navUp.style.gridRow = "1"; navUp.style.gridColumn = "6";
+      navUp.addEventListener("click", () => apiPost("/api/lcr600/screen", { screen: prevScreen() }));
+      grid.appendChild(navUp);
+    } else {
+      const navDown = document.createElement("button");
+      navDown.className = "ov-key nav"; navDown.textContent = "v"; navDown.title = "Next / Enter";
+      navDown.style.gridRow = "2"; navDown.style.gridColumn = "6";
+      navDown.addEventListener("click", () => apiPost("/api/lcr600/screen", { screen: nextScreen() }));
+      grid.appendChild(navDown);
+    }
+  });
+}
+function sendKeypadChar() { /* purely visual multitap demo -- the manual's
+  multitap text entry doesn't map to a single backend action in this sim;
+  navigating screens and editing fields is done via the deck's real form
+  controls, which is where the actual state changes happen. */ }
+function prevScreen() {
+  const cur = window._lastState ? window._lastState.lcr600.screen : "DELIVERY";
+  const i = SCREENS.indexOf(cur);
+  return SCREENS[(i - 1 + SCREENS.length) % SCREENS.length];
+}
+function nextScreen() {
+  const cur = window._lastState ? window._lastState.lcr600.screen : "DELIVERY";
+  const i = SCREENS.indexOf(cur);
+  return SCREENS[(i + 1) % SCREENS.length];
+}
+
+const SCREENS = ["DELIVERY", "GENERAL_SETUP_1", "GENERAL_SETUP_2", "POS_TAX", "POS_CASH_DISCOUNT", "PRODUCT_CAL", "SYSTEM_CAL", "DIAGNOSTICS"];
+function buildScreenTabs() {
+  const bar = document.getElementById("screenTabs");
+  SCREENS.forEach(s => {
+    const b = document.createElement("button");
+    b.textContent = s.replace(/_/g, " ");
+    b.dataset.screen = s;
+    b.addEventListener("click", () => apiPost("/api/lcr600/screen", { screen: s }));
+    bar.appendChild(b);
+  });
+}
+function renderScreenBody(state) {
+  document.querySelectorAll("#screenTabs button").forEach(b => b.classList.toggle("active", b.dataset.screen === state.lcr600.screen));
+  const descriptions = {
+    DELIVERY: "Live delivery screen -- volume, flow rate, and (if priced) running total are shown during an active delivery.",
+    GENERAL_SETUP_1: "Unit ID, date/time format, presets allowed, sale/ticket numbering, pulse output edge & frequency.",
+    GENERAL_SETUP_2: "12 lines of free-text ticket header, printed at the top of every delivery ticket.",
+    POS_TAX: "Up to 16 tax categories, each with 10 lettered lines (A-J). See the Point of Sale card.",
+    POS_CASH_DISCOUNT: "Up to 16 cash discount categories, each with 3 time-tiered discount levels.",
+    PRODUCT_CAL: "k-Factor, VCF type/parameter, S1 CLOSE dwell trigger -- see the Calibration card.",
+    SYSTEM_CAL: "Meter ID, units of measure, RTD temperature trim, flow direction, RS-485 node address.",
+    DIAGNOSTICS: "J8 pulser fault voltages and J14 RTD continuity -- see the Diagnostics card.",
+  };
+  document.getElementById("screenBody").innerHTML = `<p class="muted" style="font-size:13px; margin:0;">${descriptions[state.lcr600.screen] || ""}</p>`;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  buildOvRotaryLabels();
+  buildKeypad();
+  ovRotaryCtl = makeRotary(document.getElementById("ovRotary"), document.getElementById("ovRotaryKnob"), ROTARY_POSITIONS_OV,
+    (key) => { highlightOvLabel(key); apiPost("/api/lcr600/selector", { position: key }); });
+  wireSeal(document.getElementById("ovSeal"), "lcr600");
+  ensurePrinterPopup("lcr600");
+  wireViewToggle("lcr600", (mode) => {
+    document.getElementById("ovRoot").classList.toggle("active", mode === "original");
+    document.getElementById("cvRoot").classList.toggle("hidden", mode === "original");
+  });
+
+  buildDialLabelsCV();
+  buildScreenTabs();
+
+  document.getElementById("pulserMode").addEventListener("change", e => apiPost("/api/lcr600/pulser", { mode: e.target.value }));
+  document.getElementById("flowRate").addEventListener("change", e => apiPost("/api/lcr600/pulser", { flow_rate: parseFloat(e.target.value) || 0 }));
+  document.getElementById("setPresetBtn").addEventListener("click", () => {
+    const v = document.getElementById("presetInput").value;
+    apiPost("/api/lcr600/set_preset", { preset_units: v === "" ? null : parseFloat(v) });
+  });
+  document.getElementById("clearPresetBtn").addEventListener("click", () => apiPost("/api/lcr600/set_preset", { preset_units: null }));
+  document.getElementById("runBtn").addEventListener("click", () => apiPost("/api/lcr600/selector", { position: "RUN" }));
+  document.getElementById("stopBtn").addEventListener("click", () => apiPost("/api/lcr600/selector", { position: "STOP" }));
+  document.getElementById("printBtn").addEventListener("click", () => apiPost("/api/lcr600/selector", { position: "PRINT" }));
+  document.getElementById("setPriceBtn").addEventListener("click", () => apiPost("/api/lcr600/set_price", { price_per_unit: parseFloat(document.getElementById("priceInput").value) || 0 }));
+  document.getElementById("setTaxLineBtn").addEventListener("click", () => apiPost("/api/lcr600/set_tax_line", {
+    letter: document.getElementById("taxLetter").value, tax_type: document.getElementById("taxType").value, value: parseFloat(document.getElementById("taxValue").value) || 0,
+  }));
+  document.getElementById("buildTicketBtn").addEventListener("click", () => apiPost("/api/lcr600/build_pos_ticket", {}));
+  document.getElementById("recalBtn").addEventListener("click", async () => {
+    const v = parseFloat(document.getElementById("proverQty").value);
+    if (Number.isNaN(v)) return;
+    const res = await apiPost("/api/lcr600/recalibrate", { prover_qty: v });
+    if (res.ok) document.getElementById("calResult").textContent =
+      `New k-Factor: ${fmt(res.result.new_k_factor,4)} | Meter Qty: ${fmt(res.result.meter_qty,3)} | %Error: ${fmt(res.result.pct_error,4)}%`;
+  });
+  document.getElementById("setVcfBtn").addEventListener("click", () => apiPost("/api/lcr600/set_vcf", { vcf_type: document.getElementById("vcfType").value, param: parseFloat(document.getElementById("vcfParam").value) || 0 }));
+  document.getElementById("applyTempBtn").addEventListener("click", () => apiPost("/api/lcr600/environment", { true_temp_c: parseFloat(document.getElementById("trueTempC").value) }));
+  document.getElementById("disconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr600/environment", { rtd_probe_connected: false }));
+  document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr600/environment", { rtd_probe_connected: true }));
+
+  startPolling("lcr600", onState);
+});
+
+function buildDialLabelsCV() {
+  const dial = document.getElementById("selectorDial");
+  SELECTOR_KEYS.forEach(pos => {
+    const angle = SELECTOR_ANGLES_CV[pos] * Math.PI / 180;
+    const r = 78;
+    const x = 84 + r * Math.cos(angle);
+    const y = 84 + r * Math.sin(angle);
+    const el = document.createElement("div");
+    el.className = "selector-dial-label";
+    el.dataset.pos = pos;
+    el.style.left = (x - 30) + "px";
+    el.style.top = (y - 8) + "px";
+    el.style.width = "60px";
+    el.style.textAlign = "center";
+    el.textContent = pos.replace("_", " ");
+    el.addEventListener("click", () => apiPost("/api/lcr600/selector", { position: pos }));
+    dial.appendChild(el);
+  });
+}
+function setDialCV(position) {
+  document.querySelectorAll(".selector-dial-label").forEach(el => el.classList.toggle("active", el.dataset.pos === position));
+  const knob = document.getElementById("dialKnob");
+  knob.style.transform = `rotate(${(90 - SELECTOR_ANGLES_CV[position] + 360) % 360}deg)`;
+}
+
+function renderProductPills(state) {
+  const row = document.getElementById("productPills");
+  row.innerHTML = "";
+  state.products_brief.forEach((p, idx) => {
+    const pill = document.createElement("button");
+    pill.className = "product-pill" + (idx === state.active_product.number - 1 ? " active" : "");
+    pill.textContent = p.name;
+    pill.addEventListener("click", () => apiPost("/api/lcr600/select_product", { index: idx }));
+    row.appendChild(pill);
+  });
+}
+function populateVcfDropdown(state) {
+  const sel = document.getElementById("vcfType");
+  if (sel.options.length > 0) return;
+  Object.entries(state.vcf_types).forEach(([code, v]) => {
+    const opt = document.createElement("option");
+    opt.value = code; opt.textContent = v.label;
+    if (code === "NONE") opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", updateVcfParamUI);
+  updateVcfParamUI();
+}
+function updateVcfParamUI() {
+  const code = document.getElementById("vcfType").value;
+  const v = window._lastState.vcf_types[code];
+  document.getElementById("vcfParamLabel").textContent = v.param_label;
+  document.getElementById("vcfRange").textContent = v.param_label === "—" ? `Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}` : `Range: ${v.param_min}-${v.param_max} | Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}`;
+}
+function renderTaxTable(state) {
+  const cat = state.lcr600.active_tax_category;
+  let html = "<tr><th>Line</th><th>Type</th><th>Value</th></tr>";
+  cat.lines.forEach(l => { if (l.tax_type !== "NOT_USED") html += `<tr><td>${l.letter}</td><td>${l.tax_type.replace(/_/g," ")}</td><td>${fmt(l.value,2)}</td></tr>`; });
+  if (!cat.lines.some(l => l.tax_type !== "NOT_USED")) html += `<tr><td colspan="3" class="muted">No tax lines configured</td></tr>`;
+  document.getElementById("taxTable").innerHTML = html;
+}
+function renderDiagnostics(state) {
+  const d = state.diagnostics;
+  document.getElementById("diagTable").innerHTML = `
+    <tr><th>Point</th><th>Reading</th><th>Note</th></tr>
+    <tr><td>J8 #32</td><td>${fmt(d.j8.v32,2)} V</td><td rowspan="3" style="font-size:11px;">${d.j8.interpretation}</td></tr>
+    <tr><td>J8 #33</td><td>${fmt(d.j8.v33,2)} V</td></tr>
+    <tr><td>J8 #34</td><td>${fmt(d.j8.v34,2)} V</td></tr>
+    <tr><td>J14 RTD</td><td>${d.j14_rtd.ohms === null ? "OPEN" : d.j14_rtd.ohms + " ohm"}</td>
+        <td><span class="value-pill"><span class="dot ${d.j14_rtd.continuity_pass ? 'green' : 'red'}"></span>${d.j14_rtd.continuity_pass ? "PASS" : "FAIL"}</span></td></tr>`;
+}
+
+function onState(state) {
+  window._lastState = state;
+
+  if (ovRotaryCtl) { ovRotaryCtl.setToKey(state.lcr600.selector); highlightOvLabel(state.lcr600.selector); }
+  document.getElementById("ovLcdMain").textContent = fmt(state.delivery_total_units, 1);
+  document.getElementById("ovStatusLine").textContent = (state.active_product.name || ("PROD " + state.active_product.number)) +
+    (state.delivery_active ? " - DELIVERY ACTIVE" : "");
+  document.getElementById("ovTopRight").textContent = state.active_product.price_per_unit > 0 ? `$${fmt(state.active_product.price_per_unit,3)}/u` : "";
+  renderSeal(document.getElementById("ovSeal"), state.locked);
+  maybeShowPrinterPopup(state);
+
+  setDialCV(state.lcr600.selector);
+  document.getElementById("lcdValue").textContent = fmt(state.delivery_total_units, 1);
+  document.getElementById("lcdSubLabel").textContent = state.active_product.name || ("PROD " + state.active_product.number);
+  const chips = document.getElementById("lcdChips");
+  chips.innerHTML = "";
+  if (state.delivery_active) chips.innerHTML += `<span class="lcd-status-chip">DELIVERY ACTIVE</span>`;
+  if (state.active_product.price_per_unit > 0) chips.innerHTML += `<span class="lcd-status-chip">$${fmt(state.active_product.price_per_unit,3)}/UNIT</span>`;
+  if (state.errors.length) chips.innerHTML += `<span class="lcd-status-chip">FAULT</span>`;
+
+  renderScreenBody(state);
+  renderProductPills(state);
+  populateVcfDropdown(state);
+  renderTaxTable(state);
+  renderDiagnostics(state);
+  renderErrorBanner(state, "lcr600", document.getElementById("errorBanner"));
+  document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;
+  document.getElementById("gaugeK").textContent = fmt(state.active_product.pulses_per_unit, 2);
+  document.getElementById("lockHint").textContent = state.locked ? "LOCKED — break the W&M seal to recalibrate" : "k-Factor / VCF";
+}
+</script>
+{% endblock %}

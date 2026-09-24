@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+{% block title %}LCR.iQ Simulator{% endblock %}
+{% block view_toggle %}{% include "_view_toggle.html" %}{% endblock %}
+{% block content %}
+<div id="transientError" style="position:fixed; top:70px; right:24px; background:var(--accent-red); color:#fff; padding:8px 14px; border-radius:8px; font-size:13px; opacity:0; transition:opacity 0.3s; z-index:100; pointer-events:none;"></div>
+
+<div class="sim-layout">
+
+  <div class="instrument-col">
+
+    <!-- ---------- ORIGINAL VIEW ---------- -->
+    <div class="ov-root active ov-lcriq-shell" id="ovRoot">
+      <div class="ov-device">
+        <div class="ov-seal" id="ovSeal" title="Click to toggle the Weights & Measures tamper seal">
+          <div class="ov-seal-wire"></div>
+          <div class="ov-seal-bolt"></div>
+          <span class="ov-seal-label">UNSEALED</span>
+        </div>
+        <div class="ov-screen-frame">
+          <!-- Per the brochure's own product photography: yellow background
+               ONLY during active fueling; white/gray at idle. This is the
+               one screen-color behavior that's genuinely different on the
+               iQ vs the legacy products' always-yellow LCD. -->
+          <div class="ov-lcd ov-lcriq-screen" id="ovLcd">
+            <div class="ov-lcriq-topicons">
+              <span id="ovTopLeft">LC &#128424;</span>
+              <span id="ovTopRight"></span>
+            </div>
+            <div class="ov-lcriq-statusline" id="ovStatusLine" style="margin-top:4px; color: var(--lcd-digit);">STATUS: IDLE</div>
+            <div class="ov-lcd-digits" id="ovLcdMain">0.0</div>
+            <div style="font-family: var(--font-ui); font-size: 11px; color: var(--lcd-digit); opacity: 0.8; margin-top: -4px;">Gallons</div>
+          </div>
+        </div>
+        <div class="ov-lcriq-softkeys" id="ovSoftkeys"></div>
+
+        <div class="ov-iq-lowerpanel">
+          <div class="ov-iq-keypad" id="ovIqKeypad"></div>
+          <div class="ov-iq-dpad">
+            <button class="ov-iq-dpad-btn up">&#9650;</button>
+            <button class="ov-iq-dpad-btn down">&#9660;</button>
+            <button class="ov-iq-dpad-btn left">&#9664;</button>
+            <button class="ov-iq-dpad-btn right">&#9654;</button>
+            <button class="ov-iq-dpad-ok" id="ovOkBtn">OK</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- CUSTOM VIEW ---------- -->
+    <div class="cv-root hidden" id="cvRoot">
+      <div class="instrument">
+        <div class="instrument-plate"><strong>LCR.iQ</strong> &middot; CENTRILOGiQ Platform &middot; I/O Board 84353 Rev J</div>
+        <div class="lcd-screen" style="min-height:170px;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div>
+              <div class="lcd-readout" id="lcdValue">0.0</div>
+              <div class="lcd-sub" style="margin-top:2px;"><span id="lcdSubLabel">PROD 1</span><span id="lcdUnits">GAL</span></div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-family:var(--font-mono); font-size:11px; color:var(--lcd-digit); opacity:0.8;" id="valvePct">VALVE 0%</div>
+              <div style="font-family:var(--font-mono); font-size:11px; color:var(--lcd-digit); opacity:0.8; margin-top:2px;" id="wirelessIcons">BT: OFF &middot; WIFI: OFF</div>
+            </div>
+          </div>
+          <div class="lcd-status-row" id="lcdChips" style="margin-top:8px;"></div>
+        </div>
+        <div class="btn-row">
+          <button class="key-btn run wide" id="runBtn">START</button>
+          <button class="key-btn stop wide" id="stopBtn">STOP</button>
+        </div>
+        <div class="muted" style="text-align:center; font-size:10.5px; margin-top:6px;">LCR.iQ has no rotary switch &mdash; START/STOP are soft buttons</div>
+        <div class="tab-bar" id="screenTabs" style="margin-top:16px; justify-content:center;"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="deck-scroll">
+    <div id="errorBanner"></div>
+    <div class="deck">
+
+      <div class="card">
+        <h2>Product &amp; Pulser</h2>
+        <div class="product-pill-row" id="productPills"></div>
+        <div class="field-row">
+          <label>Pulser mode</label>
+          <select id="pulserMode">
+            <option value="idle">Idle (no flow)</option>
+            <option value="flowing">Flowing</option>
+            <option value="vibration">Flowing (vibration / jitter)</option>
+            <option value="stalled">Stalled (fault)</option>
+          </select>
+        </div>
+        <div class="field-row"><label>Commanded flow rate (units/min)</label><input type="number" id="flowRate" value="60" min="0" step="1"></div>
+        <div class="muted" style="font-size:11.5px; margin-top:-4px;">Actual flow ramps with the digital valve below, not instantly.</div>
+        <div class="gauge-row" style="margin-top:10px;">
+          <div class="gauge"><div class="label">Pulses (total)</div><div class="val" id="gaugePulses">0</div></div>
+          <div class="gauge"><div class="label">k-Factor</div><div class="val" id="gaugeK">—</div></div>
+        </div>
+        <div class="gauge" style="margin-top:10px;">
+          <div class="label">Digital Valve Position</div>
+          <div class="val" id="valveVal">0%</div>
+          <div class="bar-track"><div class="bar-fill" id="valveBar" style="width:0%"></div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Delivery</h2>
+        <div class="btn-bar">
+          <button class="btn run" id="runBtnDeck">Start</button>
+          <button class="btn stop" id="stopBtnDeck">Stop</button>
+        </div>
+        <div class="field-row" style="margin-top:12px;"><label>Preset (units)</label><input type="number" id="presetInput" placeholder="none" step="0.1"></div>
+        <div class="btn-bar"><button class="btn" id="setPresetBtn">Set Preset</button><button class="btn" id="clearPresetBtn">Clear</button></div>
+        <div id="ticketView" style="margin-top:14px; font-family: var(--font-mono); font-size: 12.5px; white-space: pre-wrap; background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 8px; padding: 12px; display:none;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Wireless Connectivity <span class="hint">Bluetooth / Wi-Fi pairing flow</span></h2>
+        <div class="field-row"><label>Bluetooth</label><span class="value-pill"><span class="dot" id="btDot"></span><span id="btStateText">OFF</span></span></div>
+        <div class="btn-bar">
+          <button class="btn" id="btOnBtn">Turn On</button>
+          <button class="btn" id="btScanBtn">Scan</button>
+          <button class="btn" id="btConnectPrinterBtn">Connect "Bluetooth Printer"</button>
+          <button class="btn" id="btConnectDeviceBtn">Pair+Connect "Handheld PC"</button>
+          <button class="btn danger" id="btOffBtn">Turn Off</button>
+        </div>
+        <div class="field-row" style="margin-top:14px;"><label>Wi-Fi</label><span class="value-pill"><span class="dot" id="wifiDot"></span><span id="wifiStateText">OFF</span></span></div>
+        <div class="btn-bar">
+          <button class="btn" id="wifiOnBtn">Scan</button>
+          <button class="btn" id="wifiConnectBtn">Connect "Depot-WiFi"</button>
+          <button class="btn danger" id="wifiOffBtn">Turn Off</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>SENSEiQ &mdash; Tank Inventory <span class="hint">4-20mA loop inputs, up to 12 tanks</span></h2>
+        <div class="field-row"><label>Tank #</label><select id="tankNumber"></select></div>
+        <div class="field-row"><label>Loop current (4-20 mA)</label><input type="number" id="tankMa" min="4" max="20" step="0.1" value="12"></div>
+        <div class="btn-bar"><button class="btn" id="setTankBtn">Apply to Channel 1</button></div>
+        <div id="tankGrid" class="gauge-row" style="margin-top:12px; flex-wrap:wrap;"></div>
+      </div>
+
+      <div class="card">
+        <h2>Calibration <span class="hint" id="lockHint">k-Factor / VCF</span></h2>
+        <div class="field-row"><label>Prover quantity</label><input type="number" id="proverQty" step="0.01" placeholder="e.g. 50.00"></div>
+        <div class="btn-bar"><button class="btn primary" id="recalBtn">Recalibrate from Prover</button></div>
+        <div id="calResult" class="muted mono" style="font-size:12px; margin-top:8px;"></div>
+        <div style="margin-top:16px; border-top:1px solid var(--ui-border); padding-top:14px;">
+          <div class="field-row"><label>VCF type</label><select id="vcfType"></select></div>
+          <div class="field-row"><label id="vcfParamLabel">Parameter</label><input type="number" id="vcfParam" step="0.0001"></div>
+          <div class="muted" style="font-size:11.5px;" id="vcfRange"></div>
+          <div class="btn-bar"><button class="btn" id="setVcfBtn">Apply VCF</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Environment / Fault Injection</h2>
+        <div class="field-row"><label>True liquid temp (&deg;C)</label><input type="number" id="trueTempC" step="0.1" value="15"></div>
+        <div class="btn-bar">
+          <button class="btn" id="applyTempBtn">Apply Temp</button>
+          <button class="btn danger" id="disconnectRtdBtn">Disconnect RTD</button>
+          <button class="btn" id="reconnectRtdBtn">Reconnect RTD</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Diagnostics</h2>
+        <table class="diag-table" id="diagTable"></table>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+window.PRODUCT_KEY = "lcriq";
+const SCREENS = ["HOME", "DELIVERY", "SETUP_REGISTER", "SETUP_METER", "SETUP_CALIBRATION", "SETUP_SECURITY", "SETUP_IO", "WIRELESS", "TANK_INVENTORY", "DIAGNOSTICS"];
+
+/* Real LCR.iQ keypad per the brochure photo: 1-9, 0, with multitap letter
+   groups identical in spirit to LCR-600's, plus a dedicated symbol key. */
+const IQ_KEYPAD = [["1","2","3"],["4","5","6"],["7","8","9"],["sym","0","del"]];
+const IQ_SUBLABELS = { "1":"_-\\:", "2":"abc", "3":"def", "4":"ghi", "5":"jkl", "6":"mno", "7":"pqrs", "8":"tuv", "9":"wxyz", "0":"+", "sym":",*/=", "del":"" };
+
+function buildIqKeypad() {
+  const grid = document.getElementById("ovIqKeypad");
+  IQ_KEYPAD.flat().forEach(k => {
+    const btn = document.createElement("button");
+    btn.className = "ov-key";
+    if (k === "del") { btn.innerHTML = "&#9003;"; }
+    else { btn.innerHTML = `${k}<span class="sub">${IQ_SUBLABELS[k] || ""}</span>`; }
+    grid.appendChild(btn);
+  });
+}
+
+function buildSoftkeys() {
+  const row = document.getElementById("ovSoftkeys");
+  for (let i = 0; i < 5; i++) {
+    const btn = document.createElement("button");
+    btn.className = "ov-softkey";
+    btn.dataset.idx = i;
+    row.appendChild(btn);
+  }
+}
+/* Per the brochure's own two photographed screens: idle reads "Weight
+   Preset / Main Menu / Print Last Ticket / (blank) / Start" (Start
+   highlighted, bottom-right); active reads "Show Details / Stop / (blank)
+   / (blank) / End & Print". Rendered fresh on every state poll rather than
+   built once, since which keys are even present changes with delivery state. */
+function renderSoftkeys(state) {
+  const running = state.lcriq.running;
+  const labels = running
+    ? ["Show Details", "Stop", "", "", "End & Print"]
+    : ["Weight Preset", "Main Menu", "Print Last Ticket", "", "Start"];
+  document.querySelectorAll(".ov-softkey").forEach((btn, i) => {
+    const label = labels[i];
+    btn.textContent = label || "—";
+    btn.disabled = !label;
+    btn.classList.toggle("danger", running && i === 1);
+  });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  buildIqKeypad();
+  buildSoftkeys();
+  wireSeal(document.getElementById("ovSeal"), "lcriq");
+  ensurePrinterPopup("lcriq");
+  wireViewToggle("lcriq", (mode) => {
+    document.getElementById("ovRoot").classList.toggle("active", mode === "original");
+    document.getElementById("cvRoot").classList.toggle("hidden", mode === "original");
+  });
+
+  buildScreenTabs();
+
+  // Softkey actions depend on running state, matching the real unit's
+  // softkeys changing meaning between the idle and active screens (see
+  // renderSoftkeys' comment for the exact label source).
+  document.getElementById("ovSoftkeys").addEventListener("click", (e) => {
+    const btn = e.target.closest(".ov-softkey");
+    if (!btn || btn.disabled) return;
+    const running = window._lastState && window._lastState.lcriq.running;
+    const idx = btn.dataset.idx;
+    if (!running && idx === "4") apiPost("/api/lcriq/run", { running: true });   // Start
+    else if (running && idx === "1") apiPost("/api/lcriq/run", { running: false }); // Stop
+    else if (running && idx === "4") apiPost("/api/lcriq/run", { running: false }); // End & Print
+  });
+  document.getElementById("ovOkBtn").addEventListener("click", () => {
+    const running = window._lastState && window._lastState.lcriq.running;
+    apiPost("/api/lcriq/run", { running: !running });
+  });
+
+  document.getElementById("runBtn").addEventListener("click", () => apiPost("/api/lcriq/run", { running: true }));
+  document.getElementById("stopBtn").addEventListener("click", () => apiPost("/api/lcriq/run", { running: false }));
+  document.getElementById("runBtnDeck").addEventListener("click", () => apiPost("/api/lcriq/run", { running: true }));
+  document.getElementById("stopBtnDeck").addEventListener("click", () => apiPost("/api/lcriq/run", { running: false }));
+
+  document.getElementById("pulserMode").addEventListener("change", e => apiPost("/api/lcriq/pulser", { mode: e.target.value }));
+  document.getElementById("flowRate").addEventListener("change", e => apiPost("/api/lcriq/pulser", { flow_rate: parseFloat(e.target.value) || 0 }));
+  document.getElementById("setPresetBtn").addEventListener("click", () => {
+    const v = document.getElementById("presetInput").value;
+    apiPost("/api/lcriq/set_preset", { preset_units: v === "" ? null : parseFloat(v) });
+  });
+  document.getElementById("clearPresetBtn").addEventListener("click", () => apiPost("/api/lcriq/set_preset", { preset_units: null }));
+
+  document.getElementById("btOnBtn").addEventListener("click", () => apiPost("/api/lcriq/bluetooth", { action: "toggle", on: true }));
+  document.getElementById("btOffBtn").addEventListener("click", () => apiPost("/api/lcriq/bluetooth", { action: "disconnect" }));
+  document.getElementById("btScanBtn").addEventListener("click", () => apiPost("/api/lcriq/bluetooth", { action: "scan" }));
+  document.getElementById("btConnectPrinterBtn").addEventListener("click", () => apiPost("/api/lcriq/bluetooth", { action: "connect", device_name: "Bluetooth Printer", is_printer: true }));
+  document.getElementById("btConnectDeviceBtn").addEventListener("click", () => apiPost("/api/lcriq/bluetooth", { action: "connect", device_name: "Handheld PC", is_printer: false }));
+  document.getElementById("wifiOnBtn").addEventListener("click", () => apiPost("/api/lcriq/wifi", { action: "toggle", on: true }));
+  document.getElementById("wifiOffBtn").addEventListener("click", () => apiPost("/api/lcriq/wifi", { action: "toggle", on: false }));
+  document.getElementById("wifiConnectBtn").addEventListener("click", () => apiPost("/api/lcriq/wifi", { action: "connect", ssid: "Depot-WiFi" }));
+
+  document.getElementById("setTankBtn").addEventListener("click", () => {
+    apiPost("/api/lcriq/analog_input", {
+      channel: 1, ma_value: parseFloat(document.getElementById("tankMa").value),
+      use_case: "TANK_LEVEL", tank_number: parseInt(document.getElementById("tankNumber").value || "1", 10),
+    });
+  });
+  document.getElementById("recalBtn").addEventListener("click", async () => {
+    const v = parseFloat(document.getElementById("proverQty").value);
+    if (Number.isNaN(v)) return;
+    const res = await apiPost("/api/lcriq/recalibrate", { prover_qty: v });
+    if (res.ok) document.getElementById("calResult").textContent =
+      `New k-Factor: ${fmt(res.result.new_k_factor,4)} | Meter Qty: ${fmt(res.result.meter_qty,3)} | %Error: ${fmt(res.result.pct_error,4)}%`;
+  });
+  document.getElementById("setVcfBtn").addEventListener("click", () => apiPost("/api/lcriq/set_vcf", { vcf_type: document.getElementById("vcfType").value, param: parseFloat(document.getElementById("vcfParam").value) || 0 }));
+  document.getElementById("applyTempBtn").addEventListener("click", () => apiPost("/api/lcriq/environment", { true_temp_c: parseFloat(document.getElementById("trueTempC").value) }));
+  document.getElementById("disconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcriq/environment", { rtd_probe_connected: false }));
+  document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcriq/environment", { rtd_probe_connected: true }));
+
+  startPolling("lcriq", onState);
+});
+
+function buildScreenTabs() {
+  const bar = document.getElementById("screenTabs");
+  SCREENS.forEach(s => {
+    const b = document.createElement("button");
+    b.textContent = s.replace(/_/g, " ");
+    b.dataset.screen = s;
+    b.addEventListener("click", () => apiPost("/api/lcriq/navigate", { screen: s }));
+    bar.appendChild(b);
+  });
+}
+function buildTankDropdown(state) {
+  const sel = document.getElementById("tankNumber");
+  if (sel.options.length > 0) return;
+  state.lcriq.tanks.forEach(t => {
+    const opt = document.createElement("option");
+    opt.value = t.number; opt.textContent = t.name;
+    sel.appendChild(opt);
+  });
+}
+function renderProductPills(state) {
+  const row = document.getElementById("productPills");
+  row.innerHTML = "";
+  state.products_brief.forEach((p, idx) => {
+    const pill = document.createElement("button");
+    pill.className = "product-pill" + (idx === state.active_product.number - 1 ? " active" : "");
+    pill.textContent = p.name;
+    pill.addEventListener("click", () => apiPost("/api/lcriq/select_product", { index: idx }));
+    row.appendChild(pill);
+  });
+}
+function populateVcfDropdown(state) {
+  const sel = document.getElementById("vcfType");
+  if (sel.options.length > 0) return;
+  Object.entries(state.vcf_types).forEach(([code, v]) => {
+    const opt = document.createElement("option");
+    opt.value = code; opt.textContent = v.label;
+    if (code === "NONE") opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", updateVcfParamUI);
+  updateVcfParamUI();
+}
+function updateVcfParamUI() {
+  const code = document.getElementById("vcfType").value;
+  const v = window._lastState.vcf_types[code];
+  document.getElementById("vcfParamLabel").textContent = v.param_label;
+  document.getElementById("vcfRange").textContent = v.param_label === "—" ? `Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}` : `Range: ${v.param_min}-${v.param_max} | Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}`;
+}
+function renderWireless(state) {
+  const bt = state.lcriq.bluetooth_state;
+  document.getElementById("btStateText").textContent = bt + (state.lcriq.bluetooth_paired_device ? ` (${state.lcriq.bluetooth_paired_device.name})` : "");
+  document.getElementById("btDot").className = "dot " + (bt === "CONNECTED" ? "green" : bt === "OFF" ? "" : "amber");
+  const wifi = state.lcriq.wifi_state;
+  document.getElementById("wifiStateText").textContent = wifi + (state.lcriq.wifi_ssid ? ` (${state.lcriq.wifi_ssid})` : "");
+  document.getElementById("wifiDot").className = "dot " + (wifi === "CONNECTED" ? "green" : wifi === "OFF" ? "" : "amber");
+}
+function renderTanks(state) {
+  buildTankDropdown(state);
+  const grid = document.getElementById("tankGrid");
+  grid.innerHTML = "";
+  state.lcriq.tanks.slice(0, 6).forEach(t => {
+    const div = document.createElement("div");
+    div.className = "gauge";
+    div.innerHTML = `<div class="label">${t.name}</div><div class="val">${fmt(t.level_pct,1)}%</div><div class="bar-track"><div class="bar-fill" style="width:${t.level_pct}%"></div></div>`;
+    grid.appendChild(div);
+  });
+}
+function renderDiagnostics(state) {
+  const d = state.diagnostics;
+  document.getElementById("diagTable").innerHTML = `
+    <tr><th>Point</th><th>Reading</th><th>Note</th></tr>
+    <tr><td>J8 #32</td><td>${fmt(d.j8.v32,2)} V</td><td rowspan="3" style="font-size:11px;">${d.j8.interpretation}</td></tr>
+    <tr><td>J8 #33</td><td>${fmt(d.j8.v33,2)} V</td></tr>
+    <tr><td>J8 #34</td><td>${fmt(d.j8.v34,2)} V</td></tr>
+    <tr><td>RTD</td><td>${d.j14_rtd.ohms === null ? "OPEN" : d.j14_rtd.ohms + " ohm"}</td>
+        <td><span class="value-pill"><span class="dot ${d.j14_rtd.continuity_pass ? 'green' : 'red'}"></span>${d.j14_rtd.continuity_pass ? "PASS" : "FAIL"}</span></td></tr>`;
+}
+function renderTicket(state) {
+  const view = document.getElementById("ticketView");
+  if (!state.last_ticket) { view.style.display = "none"; return; }
+  view.style.display = "block";
+  view.textContent = JSON.stringify(state.last_ticket, null, 2);
+}
+
+function onState(state) {
+  window._lastState = state;
+
+  // Original View
+  document.getElementById("ovLcdMain").textContent = fmt(state.delivery_total_units, 1);
+  document.getElementById("ovStatusLine").textContent = state.lcriq.running ? "STATUS: ACTIVE" : "STATUS: IDLE";
+  document.getElementById("ovTopRight").textContent =
+    (state.lcriq.bluetooth_state === "CONNECTED" ? "BT " : "") + (state.lcriq.wifi_state === "CONNECTED" ? "WIFI" : "");
+  // The single most distinctive iQ-specific visual behavior: yellow ONLY
+  // while actively fueling, white/gray otherwise -- per the brochure's own
+  // side-by-side idle vs. active product photography.
+  document.getElementById("ovLcd").classList.toggle("idle-theme", !state.lcriq.running);
+  renderSeal(document.getElementById("ovSeal"), state.locked);
+  renderSoftkeys(state);
+  maybeShowPrinterPopup(state);
+
+  // Custom View
+  document.getElementById("lcdValue").textContent = fmt(state.delivery_total_units, 1);
+  document.getElementById("lcdSubLabel").textContent = state.active_product.name || ("PROD " + state.active_product.number);
+  document.getElementById("valvePct").textContent = "VALVE " + Math.round(state.lcriq.valve_position * 100) + "%";
+  document.getElementById("wirelessIcons").textContent = "BT: " + state.lcriq.bluetooth_state + " | WIFI: " + state.lcriq.wifi_state;
+  const chips = document.getElementById("lcdChips");
+  chips.innerHTML = "";
+  if (state.lcriq.running) chips.innerHTML += `<span class="lcd-status-chip">DELIVERY ACTIVE</span>`;
+  if (state.lcriq.qr_ticket_pending) chips.innerHTML += `<span class="lcd-status-chip">QR TICKET READY</span>`;
+  if (state.errors.length) chips.innerHTML += `<span class="lcd-status-chip">FAULT</span>`;
+  document.querySelectorAll("#screenTabs button").forEach(b => b.classList.toggle("active", b.dataset.screen === state.lcriq.screen));
+
+  renderProductPills(state);
+  populateVcfDropdown(state);
+  renderWireless(state);
+  renderTanks(state);
+  renderDiagnostics(state);
+  renderErrorBanner(state, "lcriq", document.getElementById("errorBanner"));
+  renderTicket(state);
+
+  document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;
+  document.getElementById("gaugeK").textContent = fmt(state.active_product.pulses_per_unit, 2);
+  document.getElementById("valveVal").textContent = Math.round(state.lcriq.valve_position * 100) + "%";
+  document.getElementById("valveBar").style.width = (state.lcriq.valve_position * 100) + "%";
+  document.getElementById("runBtn").disabled = state.lcriq.running;
+  document.getElementById("stopBtn").disabled = !state.lcriq.running;
+  document.getElementById("lockHint").textContent = state.locked ? "LOCKED — break the W&M seal to recalibrate" : "k-Factor / VCF";
+}
+</script>
+{% endblock %}

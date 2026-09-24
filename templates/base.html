@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}LCR Meter Simulator{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/original-view.css">
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+<header class="topbar">
+  <a class="topbar-brand" href="/">LCR&nbsp;Simulator</a>
+  <nav class="topbar-nav">
+    <a href="/meter/lcr2" class="{{ 'active' if product_key == 'lcr2' }}">LCR&#8209;II</a>
+    <a href="/meter/lcr600" class="{{ 'active' if product_key == 'lcr600' }}">LCR&nbsp;600</a>
+    <a href="/meter/lcriq" class="{{ 'active' if product_key == 'lcriq' }}">LCR.iQ</a>
+  </nav>
+  {% block view_toggle %}{% endblock %}
+  <button class="reset-btn" id="resetBtn" title="Reset this meter's state back to factory defaults">Reset Meter</button>
+  <button class="info-trigger" id="infoTrigger" title="About this simulator">i</button>
+</header>
+<main class="app-shell">
+{% block content %}{% endblock %}
+</main>
+<div class="info-popover" id="infoPopover">
+  Simulation built from Liquid Controls LectroCount engineering manuals (LCR-II, LCR 600,
+  LCR.iQ/MASTERLOAD.iQ). Calibration math, VCF domain checks, multi-point validation rules,
+  and the J8 pulser fault voltage table are modeled against the source manuals; VCF curve
+  coefficients themselves are an engineering approximation since the manuals publish valid
+  parameter ranges but not the underlying API table values. Original View recreates the real
+  switch plate / keypad layout from the manuals' own dimensioned photos. Not a substitute for
+  the real instrument or a Weights &amp; Measures-traceable calibration. See README.md and
+  SIMULATION_NOTES.md for full detail.
+</div>
+<script src="/static/common.js"></script>
+<script src="/static/original-view.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const trigger = document.getElementById("infoTrigger");
+  const popover = document.getElementById("infoPopover");
+  trigger.addEventListener("click", () => popover.classList.toggle("open"));
+  document.addEventListener("click", (e) => {
+    if (!popover.contains(e.target) && e.target !== trigger) popover.classList.remove("open");
+  });
+});
+</script>
+{% block extra_scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,480 @@
+/* ============================================================
+   LCR Meter Simulator — shared visual system
+   Palette derived from the actual LectroCount hardware photos in
+   the source manuals: dark gunmetal/blue-gray polycarbonate
+   enclosure, safety-yellow backlit LCD with near-black segment
+   digits, light warm-gray membrane keypad keys.
+   ============================================================ */
+
+:root {
+  --enclosure-dark:   #2b3038;   /* main housing color */
+  --enclosure-darker: #1c1f25;   /* recessed/shadow areas */
+  --enclosure-edge:   #454c57;   /* highlighted edges/bezels */
+  --lcd-yellow:       #d7c948;   /* the actual LCD backlight color from the photos */
+  --lcd-yellow-bright:#e8dc6a;
+  --lcd-digit:        #1a1a14;   /* near-black segment digits on yellow */
+  --lcd-digit-dim:     #4a472f;  /* unlit segment ghosting, subtle */
+  --key-face:         #c7c4bb;   /* membrane keypad key color */
+  --key-face-dark:    #8c8a82;
+  --accent-amber:     #e0922f;   /* warning/caution accent, matches safety-tag amber */
+  --accent-red:       #c0392b;   /* fault/error accent */
+  --accent-green:     #3f9142;   /* good/flowing accent */
+  --ui-bg:            #15171b;   /* page background, darker than the enclosure so it reads as "the room" */
+  --ui-panel:         #1d2024;   /* control-panel surfaces around the instrument */
+  --ui-border:        #33373e;
+  --ui-text:          #d8d6cf;
+  --ui-text-dim:      #8a8d92;
+  --ui-text-bright:   #f2f0e8;
+
+  --font-display: 'Oswald', 'Arial Narrow', sans-serif;     /* instrument-plate lettering */
+  --font-ui:      'Inter', -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:    'JetBrains Mono', 'Courier New', monospace;
+  --font-seg:     'DSEG7-Classic', 'Courier New', monospace; /* seven-segment style for live readouts */
+}
+
+@font-face {
+  font-family: 'DSEG7-Classic';
+  src: local('Courier New');
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  height: 100%;
+  overflow: hidden; /* the page itself never scrolls -- only .deck-scroll does, per the fit-to-window requirement */
+}
+html { box-sizing: border-box; }
+
+/* ---------------- top bar ---------------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 24px;
+  background: var(--ui-panel);
+  border-bottom: 1px solid var(--ui-border);
+  flex: 0 0 auto;
+}
+.topbar-brand {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ui-text-bright);
+  text-decoration: none;
+  font-size: 17px;
+}
+.topbar-nav { display: flex; gap: 4px; margin-right: auto; }
+.topbar-nav a {
+  color: var(--ui-text-dim);
+  text-decoration: none;
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+}
+.topbar-nav a:hover { color: var(--ui-text-bright); background: rgba(255,255,255,0.04); }
+.topbar-nav a.active { color: var(--lcd-yellow-bright); background: rgba(215,201,72,0.10); }
+
+.reset-btn {
+  background: transparent;
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text-dim);
+  padding: 7px 14px;
+  border-radius: 5px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.reset-btn:hover { border-color: var(--accent-red); color: var(--accent-red); }
+
+body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell {
+  flex: 1 1 auto;
+  min-height: 0; /* critical for child overflow to work inside a flex parent */
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 18px 24px;
+  overflow: hidden;
+}
+
+.foot-note {
+  display: none; /* the long disclaimer text moves into a compact info popover to preserve vertical space -- see .info-trigger below */
+}
+
+.info-trigger {
+  background: transparent;
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text-dim);
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.info-trigger:hover { color: var(--ui-text-bright); border-color: var(--ui-text-dim); }
+.info-popover {
+  position: fixed;
+  top: 56px; right: 24px;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  padding: 16px;
+  font-size: 12px;
+  color: var(--ui-text-dim);
+  line-height: 1.6;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+  z-index: 90;
+  display: none;
+}
+.info-popover.open { display: block; }
+
+/* ---------------- layout: instrument + control deck ---------------- */
+.sim-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 440px) 1fr;
+  gap: 24px;
+  height: 100%;
+  min-height: 0;
+}
+@media (max-width: 920px) {
+  .sim-layout { grid-template-columns: 1fr; height: auto; overflow-y: auto; }
+  .sim-layout .deck-scroll { overflow: visible; max-height: none; }
+}
+
+/* Left column: instrument, vertically centered, never scrolls on its own --
+   it's sized to fit, with Custom View's instrument panel internally
+   scrolling ONLY if its own content (rare) would otherwise overflow. */
+.instrument-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Right column: the control deck. This is the "side scroll" the brief
+   asked for -- everything that isn't the instrument itself lives here and
+   scrolls independently of the page, so the instrument stays fully visible
+   at all times regardless of how many cards are open below it. */
+.deck-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px; /* room for the scrollbar so content doesn't visually clip under it */
+}
+.deck-scroll::-webkit-scrollbar { width: 9px; }
+.deck-scroll::-webkit-scrollbar-track { background: transparent; }
+.deck-scroll::-webkit-scrollbar-thumb { background: var(--ui-border); border-radius: 5px; }
+.deck-scroll::-webkit-scrollbar-thumb:hover { background: #454a52; }
+
+/* ---------------- the instrument enclosure ---------------- */
+.instrument {
+  background: linear-gradient(155deg, var(--enclosure-edge), var(--enclosure-dark) 18%, var(--enclosure-darker));
+  border-radius: 18px;
+  padding: 22px;
+  box-shadow: 0 20px 50px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
+  margin: auto 0; /* vertically center within instrument-col when there's extra space */
+}
+.instrument-plate {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 13px;
+  color: var(--ui-text-dim);
+  text-align: center;
+  margin-bottom: 14px;
+}
+.instrument-plate strong { color: var(--ui-text-bright); font-weight: 600; }
+
+.lcd-screen {
+  background: radial-gradient(ellipse at 30% 20%, var(--lcd-yellow-bright), var(--lcd-yellow) 70%);
+  border-radius: 6px;
+  padding: 14px 16px;
+  box-shadow: inset 0 2px 10px rgba(0,0,0,0.35), inset 0 0 0 3px rgba(0,0,0,0.25);
+  min-height: 96px;
+  position: relative;
+  overflow: hidden;
+}
+.lcd-screen::after {
+  /* subtle screen-door / scanline texture so it doesn't read as a flat web div */
+  content: "";
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(180deg, rgba(0,0,0,0.03) 0px, rgba(0,0,0,0.03) 1px, transparent 1px, transparent 3px);
+  pointer-events: none;
+}
+.lcd-readout {
+  font-family: var(--font-seg);
+  font-variant-numeric: tabular-nums;
+  color: var(--lcd-digit);
+  font-size: 38px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.15);
+}
+.lcd-readout.small { font-size: 22px; }
+.lcd-sub {
+  font-family: var(--font-ui);
+  color: var(--lcd-digit);
+  opacity: 0.75;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+.lcd-status-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.lcd-status-chip {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(0,0,0,0.12);
+  color: var(--lcd-digit);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+/* ---------------- physical controls ---------------- */
+.controls-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.selector-dial {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #4a5160, #20242b 70%);
+  box-shadow: inset 0 3px 8px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3);
+  margin: 10px auto 0;
+}
+.selector-dial-label {
+  position: absolute;
+  font-size: 9.5px;
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+  color: var(--ui-text-dim);
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.selector-dial-label:hover { color: var(--ui-text-bright); background: rgba(255,255,255,0.06); }
+.selector-dial-label.active { color: var(--lcd-yellow-bright); font-weight: 700; }
+.selector-dial-knob {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 56px; height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: linear-gradient(155deg, #6b7281, #2a2e35);
+  box-shadow: 0 3px 6px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.15);
+}
+.selector-dial-knob::after {
+  content: "";
+  position: absolute;
+  top: 6px; left: 50%;
+  width: 4px; height: 16px;
+  margin-left: -2px;
+  background: var(--accent-red);
+  border-radius: 2px;
+  transform-origin: 2px 22px;
+  transition: transform 0.25s ease;
+}
+
+.btn-row { display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }
+.key-btn {
+  font-family: var(--font-ui);
+  background: linear-gradient(180deg, var(--key-face), var(--key-face-dark));
+  color: #2a2a26;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 2px 0 rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.4);
+  transition: transform 0.08s, box-shadow 0.08s;
+}
+.key-btn:active { transform: translateY(2px); box-shadow: 0 0 0 rgba(0,0,0,0.35); }
+.key-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.key-btn.wide { padding: 10px 26px; }
+.key-btn.run { background: linear-gradient(180deg, #6fc973, var(--accent-green)); color: #0d2b0e; }
+.key-btn.stop { background: linear-gradient(180deg, #e07b73, var(--accent-red)); color: #2b0d0d; }
+
+/* ---------------- control deck (right column) ---------------- */
+.deck {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.card {
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.card h2 {
+  font-family: var(--font-display);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ui-text-bright);
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ui-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card h2 .hint { font-family: var(--font-ui); font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--ui-text-dim); font-weight: 400; }
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.field-row label { font-size: 13px; color: var(--ui-text-dim); }
+.field-row input[type=number], .field-row input[type=text], .field-row select {
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text-bright);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  width: 150px;
+}
+.field-row.stack { grid-template-columns: 1fr; }
+.field-row.stack input, .field-row.stack select { width: 100%; }
+
+.btn {
+  background: var(--ui-border);
+  color: var(--ui-text-bright);
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:hover { background: #3d424a; }
+.btn.primary { background: var(--accent-amber); color: #2b1c05; }
+.btn.primary:hover { background: #f0a23f; }
+.btn.danger { background: var(--accent-red); color: #fff; }
+.btn-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+.error-banner {
+  background: rgba(192,57,43,0.15);
+  border: 1px solid var(--accent-red);
+  color: #ffb3ab;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.error-banner .clear { background: none; border: 1px solid #ffb3ab; color: #ffb3ab; padding: 3px 9px; border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+
+.muted { color: var(--ui-text-dim); }
+.mono { font-family: var(--font-mono); }
+.value-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255,255,255,0.05);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ui-text-dim); display: inline-block; }
+.dot.green { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.dot.red { background: var(--accent-red); box-shadow: 0 0 6px var(--accent-red); }
+.dot.amber { background: var(--accent-amber); box-shadow: 0 0 6px var(--accent-amber); }
+
+table.diag-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12.5px; }
+table.diag-table th, table.diag-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--ui-border); }
+table.diag-table th { color: var(--ui-text-dim); font-weight: 600; text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.04em; }
+
+.tab-bar { display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
+.tab-bar button {
+  background: transparent; border: 1px solid var(--ui-border); color: var(--ui-text-dim);
+  padding: 6px 12px; border-radius: 6px 6px 0 0; font-size: 12.5px; cursor: pointer; font-weight: 600;
+}
+.tab-bar button.active { color: var(--lcd-yellow-bright); border-bottom-color: var(--ui-panel); background: rgba(215,201,72,0.06); }
+
+.product-pill-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.product-pill {
+  background: var(--ui-bg); border: 1px solid var(--ui-border); color: var(--ui-text-dim);
+  padding: 5px 11px; border-radius: 999px; font-size: 12px; cursor: pointer; font-family: var(--font-mono);
+}
+.product-pill.active { color: var(--lcd-yellow-bright); border-color: var(--lcd-yellow); background: rgba(215,201,72,0.08); }
+
+.gauge-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.gauge {
+  flex: 1 1 130px;
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.gauge .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ui-text-dim); margin-bottom: 4px; }
+.gauge .val { font-family: var(--font-mono); font-size: 19px; color: var(--ui-text-bright); }
+.gauge .bar-track { height: 6px; background: var(--ui-border); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.gauge .bar-fill { height: 100%; background: var(--accent-green); border-radius: 3px; transition: width 0.3s; }
+
+/* simple home grid for index page */
+.home-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-top: 24px; }
+.home-card {
+  background: var(--ui-panel); border: 1px solid var(--ui-border); border-radius: 14px;
+  padding: 22px; text-decoration: none; color: var(--ui-text); transition: border-color 0.15s, transform 0.15s;
+}
+.home-card:hover { border-color: var(--lcd-yellow); transform: translateY(-2px); }
+.home-card h3 { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.03em; color: var(--ui-text-bright); margin: 0 0 8px; font-size: 19px; }
+.home-card p { font-size: 13.5px; color: var(--ui-text-dim); margin: 0; line-height: 1.6; }
+.home-card .specs { margin-top: 12px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ui-text-dim); }
+
+.kbd-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+.kbd-grid .key-btn { padding: 10px 0; font-size: 12px; }
+
+.checklist { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+.checklist li { padding: 4px 0; display: flex; gap: 8px; align-items: baseline; }
+.checklist li::before { content: "—"; color: var(--ui-text-dim); }

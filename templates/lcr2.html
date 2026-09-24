@@ -1,0 +1,415 @@
+{% extends "base.html" %}
+{% block title %}LCR-II Simulator{% endblock %}
+{% block view_toggle %}{% include "_view_toggle.html" %}{% endblock %}
+{% block content %}
+<div id="transientError" style="position:fixed; top:70px; right:24px; background:var(--accent-red); color:#fff; padding:8px 14px; border-radius:8px; font-size:13px; opacity:0; transition:opacity 0.3s; z-index:100; pointer-events:none;"></div>
+
+<div class="sim-layout">
+
+  <!-- ============ INSTRUMENT COLUMN ============ -->
+  <div class="instrument-col">
+
+    <!-- ---------- ORIGINAL VIEW ---------- -->
+    <div class="ov-root active" id="ovRoot">
+      <div class="ov-device">
+        <div class="ov-seal" id="ovSeal" title="Click to toggle the Weights & Measures tamper seal">
+          <div class="ov-seal-wire"></div>
+          <div class="ov-seal-bolt"></div>
+          <span class="ov-seal-label">UNSEALED</span>
+        </div>
+        <div class="ov-titlebar ov-lcr2-title">LectroCount LCR-II</div>
+        <div class="ov-screen-frame">
+          <div class="ov-lcd ov-lcr2-screen" id="ovLcd">
+            <div class="ov-lcd-digits" id="ovLcdMain">000000</div>
+          </div>
+        </div>
+        <div class="ov-lcr2-controlrow">
+          <div class="ov-lc-badge">LC</div>
+          <div class="ov-rotary-wrap">
+            <div class="ov-rotary" id="ovRotary">
+              <div class="ov-rotary-labels" id="ovRotaryLabels"></div>
+              <div class="ov-rotary-knob" id="ovRotaryKnob"></div>
+            </div>
+            <div class="ov-rotary-hint">Drag to turn</div>
+          </div>
+          <div class="ov-roundbtn-col">
+            <div>
+              <button class="ov-roundbtn" id="ovSelectBtn">SEL</button>
+              <div class="ov-roundbtn-label">Select</div>
+            </div>
+            <div>
+              <button class="ov-roundbtn" id="ovIncreaseBtn">+1</button>
+              <div class="ov-roundbtn-label">Increase</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ---------- CUSTOM VIEW (previous dashboard-style instrument) ---------- -->
+    <div class="cv-root hidden" id="cvRoot">
+      <div class="instrument">
+        <div class="instrument-plate"><strong>LectroCount LCR&#8209;II</strong> &middot; Series E3657/E3658</div>
+        <div class="lcd-screen">
+          <div class="lcd-readout" id="lcdMain">000000</div>
+          <div class="lcd-sub"><span id="lcdSubLabel">DELIVERY TOTAL</span><span id="lcdUnits">GAL</span></div>
+          <div class="lcd-status-row" id="lcdChips"></div>
+        </div>
+        <div class="controls-row">
+          <div class="kbd-grid" style="width: 130px;">
+            <button class="key-btn" style="grid-column: span 3;" id="btnIncrease">INCREASE</button>
+            <button class="key-btn" style="grid-column: span 3;" id="btnSelect">SELECT</button>
+          </div>
+        </div>
+        <div class="selector-dial" id="selectorDial">
+          <div class="selector-dial-knob" id="dialKnob"></div>
+        </div>
+        <div class="muted" style="text-align:center; font-size: 11px; margin-top: 8px;">Selector switch &middot; click a position to turn the dial</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ CONTROL DECK (independently scrolling) ============ -->
+  <div class="deck-scroll">
+    <div id="errorBanner"></div>
+    <div class="deck">
+
+      <div class="card">
+        <h2>Delivery <span class="hint">RUN / STOP / PRINT / SHIFT PRINT / CALIBRATION</span></h2>
+        <div class="btn-bar">
+          <button class="btn run" id="runBtn">Selector &rarr; RUN</button>
+          <button class="btn stop" id="stopBtn">Selector &rarr; STOP</button>
+          <button class="btn" id="printBtn">Selector &rarr; PRINT</button>
+          <button class="btn" id="shiftPrintBtnShort">SHIFT PRINT (tap, &lt;2s)</button>
+          <button class="btn" id="shiftPrintBtnLong">SHIFT PRINT (hold, &gt;2s)</button>
+        </div>
+        <div class="field-row" style="margin-top:12px;">
+          <label>Preset (units, blank = no preset)</label>
+          <input type="number" id="presetInput" placeholder="none" min="0" step="0.1">
+        </div>
+        <div class="btn-bar">
+          <button class="btn" id="setPresetBtn">Set Preset</button>
+          <button class="btn" id="clearPresetBtn">Clear Preset</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Product &amp; Pulser <span class="hint">drives the simulated flow meter feeding J8</span></h2>
+        <div class="product-pill-row" id="productPills"></div>
+        <div class="field-row">
+          <label>Pulser mode</label>
+          <select id="pulserMode">
+            <option value="idle">Idle (no flow)</option>
+            <option value="flowing">Flowing</option>
+            <option value="vibration">Flowing (vibration / jitter)</option>
+            <option value="stalled">Stalled (fault)</option>
+          </select>
+        </div>
+        <div class="field-row">
+          <label>Flow rate (units/min)</label>
+          <input type="number" id="flowRate" value="60" min="0" step="1">
+        </div>
+        <div class="gauge-row" style="margin-top: 10px;">
+          <div class="gauge"><div class="label">Pulses (total)</div><div class="val" id="gaugePulses">0</div></div>
+          <div class="gauge"><div class="label">k-Factor (PULSES/UNIT)</div><div class="val" id="gaugeK">—</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Calibration <span class="hint" id="lockHint">selector in CALIBRATION position</span></h2>
+        <div class="field-row">
+          <label>Prover quantity (actual reading)</label>
+          <input type="number" id="proverQty" step="0.01" placeholder="e.g. 50.00">
+        </div>
+        <div class="btn-bar"><button class="btn primary" id="recalBtn">Recalibrate from Prover</button></div>
+        <div id="calResult" class="muted mono" style="font-size:12px; margin-top:8px;"></div>
+
+        <div style="margin-top:16px; border-top:1px solid var(--ui-border); padding-top:14px;">
+          <div class="field-row"><label>VCF compensation type</label><select id="vcfType"></select></div>
+          <div class="field-row" id="vcfParamRow"><label id="vcfParamLabel">Parameter</label><input type="number" id="vcfParam" step="0.0001"></div>
+          <div class="muted" style="font-size:11.5px;" id="vcfRange"></div>
+          <div class="btn-bar"><button class="btn" id="setVcfBtn">Apply VCF</button></div>
+        </div>
+
+        <div style="margin-top:16px; border-top:1px solid var(--ui-border); padding-top:14px;">
+          <div class="field-row"><label>Multi-point: flow rate</label><input type="number" id="calPtRate" step="0.1"></div>
+          <div class="field-row"><label>Multi-point: % error</label><input type="number" id="calPtErr" step="0.01"></div>
+          <div class="btn-bar"><button class="btn" id="addCalPtBtn">Add Calibration Point</button></div>
+          <table class="diag-table" style="margin-top:10px;" id="calPointsTable"></table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Environment / Fault Injection</h2>
+        <div class="field-row"><label>True liquid temperature (&deg;C)</label><input type="number" id="trueTempC" step="0.1" value="15"></div>
+        <div class="field-row"><label>RTD field-trim offset (&deg;C, &plusmn;0.3 max)</label><input type="number" id="rtdOffset" step="0.01" value="0"></div>
+        <div class="btn-bar">
+          <button class="btn" id="applyTempBtn">Apply Temp</button>
+          <button class="btn" id="applyOffsetBtn">Apply Offset</button>
+          <button class="btn danger" id="disconnectRtdBtn">Disconnect RTD Probe</button>
+          <button class="btn" id="reconnectRtdBtn">Reconnect RTD Probe</button>
+        </div>
+        <div class="field-row" style="margin-top:10px;"><label>Supply voltage (V)</label><input type="number" id="powerVoltage" step="0.1" value="12"></div>
+        <div class="btn-bar"><button class="btn" id="applyVoltageBtn">Apply Voltage</button></div>
+      </div>
+
+      <div class="card">
+        <h2>Diagnostics <span class="hint">J8 pulser / J14 RTD continuity</span></h2>
+        <table class="diag-table" id="diagTable"></table>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+window.PRODUCT_KEY = "lcr2";
+
+/* ---------------- shared selector position data (used by BOTH the
+   Original View's continuous rotary and the Custom View's click-to-set
+   dial, so they always agree on what each detent means) ---------------- */
+const SELECTOR_KEYS = ["RUN", "STOP", "PRINT", "SHIFT_PRINT", "CALIBRATION"];
+const SELECTOR_ANGLES_CV = { RUN: -90, STOP: -18, PRINT: 54, SHIFT_PRINT: 126, CALIBRATION: 198 }; // legacy math-angle convention for Custom View's old dial
+const ROTARY_POSITIONS_OV = [
+  { key: "RUN", angleDeg: 0 },
+  { key: "STOP", angleDeg: 72 },
+  { key: "PRINT", angleDeg: 144 },
+  { key: "SHIFT_PRINT", angleDeg: 216 },
+  { key: "CALIBRATION", angleDeg: 288 },
+];
+
+let ovRotaryCtl = null;
+let dialLabelsBuiltCV = false;
+
+/* ============ ORIGINAL VIEW setup ============ */
+function buildOvRotaryLabels() {
+  const wrap = document.getElementById("ovRotaryLabels");
+  ROTARY_POSITIONS_OV.forEach(p => {
+    const rad = p.angleDeg * Math.PI / 180;
+    const r = 44;
+    const cx = 62 + r * Math.sin(rad);
+    const cy = 62 - r * Math.cos(rad);
+    const el = document.createElement("div");
+    el.className = "ov-rotary-label";
+    el.dataset.pos = p.key;
+    el.style.left = (cx - 27) + "px";
+    el.style.top = (cy - 6) + "px";
+    el.textContent = p.key.replace("_", " ");
+    wrap.appendChild(el);
+  });
+}
+function highlightOvLabel(key) {
+  document.querySelectorAll(".ov-rotary-label").forEach(el => el.classList.toggle("lit", el.dataset.pos === key));
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  buildOvRotaryLabels();
+  ovRotaryCtl = makeRotary(
+    document.getElementById("ovRotary"),
+    document.getElementById("ovRotaryKnob"),
+    ROTARY_POSITIONS_OV,
+    (key) => { highlightOvLabel(key); apiPost("/api/lcr2/selector", { position: key }); }
+  );
+  wireSeal(document.getElementById("ovSeal"), "lcr2");
+  ensurePrinterPopup("lcr2");
+
+  document.getElementById("ovSelectBtn").addEventListener("click", () => apiPost("/api/lcr2/button", { button: "select" }));
+  document.getElementById("ovIncreaseBtn").addEventListener("click", () => apiPost("/api/lcr2/button", { button: "increase" }));
+
+  wireViewToggle("lcr2", (mode) => {
+    document.getElementById("ovRoot").classList.toggle("active", mode === "original");
+    document.getElementById("cvRoot").classList.toggle("hidden", mode === "original");
+  });
+
+  buildDialLabelsCV();
+
+  document.getElementById("btnSelect").addEventListener("click", () => apiPost("/api/lcr2/button", { button: "select" }));
+  document.getElementById("btnIncrease").addEventListener("click", () => apiPost("/api/lcr2/button", { button: "increase" }));
+  document.getElementById("pulserMode").addEventListener("change", (e) => apiPost("/api/lcr2/pulser", { mode: e.target.value }));
+  document.getElementById("flowRate").addEventListener("change", (e) => apiPost("/api/lcr2/pulser", { flow_rate: parseFloat(e.target.value) || 0 }));
+
+  document.getElementById("setPresetBtn").addEventListener("click", () => {
+    const v = document.getElementById("presetInput").value;
+    apiPost("/api/lcr2/set_preset", { preset_units: v === "" ? null : parseFloat(v) });
+  });
+  document.getElementById("clearPresetBtn").addEventListener("click", () => apiPost("/api/lcr2/set_preset", { preset_units: null }));
+
+  document.getElementById("runBtn").addEventListener("click", () => apiPost("/api/lcr2/selector", { position: "RUN" }));
+  document.getElementById("stopBtn").addEventListener("click", () => apiPost("/api/lcr2/selector", { position: "STOP" }));
+  document.getElementById("printBtn").addEventListener("click", () => apiPost("/api/lcr2/selector", { position: "PRINT" }));
+  document.getElementById("shiftPrintBtnShort").addEventListener("click", async () => {
+    await apiPost("/api/lcr2/selector", { position: "SHIFT_PRINT" });
+    setTimeout(() => apiPost("/api/lcr2/selector", { position: "PRINT" }), 400);
+  });
+  document.getElementById("shiftPrintBtnLong").addEventListener("click", async () => {
+    await apiPost("/api/lcr2/selector", { position: "SHIFT_PRINT" });
+    setTimeout(() => apiPost("/api/lcr2/selector", { position: "STOP" }), 2300);
+  });
+
+  document.getElementById("recalBtn").addEventListener("click", async () => {
+    const v = parseFloat(document.getElementById("proverQty").value);
+    if (Number.isNaN(v)) return;
+    const res = await apiPost("/api/lcr2/recalibrate", { prover_qty: v });
+    if (res.ok) {
+      document.getElementById("calResult").textContent =
+        `New k-Factor: ${fmt(res.result.new_k_factor,4)} | Meter Qty: ${fmt(res.result.meter_qty,3)} | %Error: ${fmt(res.result.pct_error,4)}%`;
+    }
+  });
+  document.getElementById("setVcfBtn").addEventListener("click", () => {
+    apiPost("/api/lcr2/set_vcf", { vcf_type: document.getElementById("vcfType").value, param: parseFloat(document.getElementById("vcfParam").value) || 0 });
+  });
+  document.getElementById("addCalPtBtn").addEventListener("click", () => {
+    apiPost("/api/lcr2/add_cal_point", {
+      flow_rate: parseFloat(document.getElementById("calPtRate").value) || 0,
+      pct_error: parseFloat(document.getElementById("calPtErr").value) || 0,
+    });
+  });
+  document.getElementById("applyTempBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { true_temp_c: parseFloat(document.getElementById("trueTempC").value) }));
+  document.getElementById("applyOffsetBtn").addEventListener("click", () => apiPost("/api/lcr2/set_rtd_offset", { offset_c: parseFloat(document.getElementById("rtdOffset").value) }));
+  document.getElementById("disconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { rtd_probe_connected: false }));
+  document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { rtd_probe_connected: true }));
+  document.getElementById("applyVoltageBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { power_voltage: parseFloat(document.getElementById("powerVoltage").value) }));
+
+  startPolling("lcr2", onState);
+});
+
+/* ============ CUSTOM VIEW's existing dial (unchanged behavior, click-to-set) ============ */
+function buildDialLabelsCV() {
+  const dial = document.getElementById("selectorDial");
+  SELECTOR_KEYS.forEach(pos => {
+    const angle = SELECTOR_ANGLES_CV[pos] * Math.PI / 180;
+    const r = 78;
+    const x = 84 + r * Math.cos(angle);
+    const y = 84 + r * Math.sin(angle);
+    const el = document.createElement("div");
+    el.className = "selector-dial-label";
+    el.dataset.pos = pos;
+    el.style.left = (x - 30) + "px";
+    el.style.top = (y - 8) + "px";
+    el.style.width = "60px";
+    el.style.textAlign = "center";
+    el.textContent = pos.replace("_", " ");
+    el.addEventListener("click", () => apiPost("/api/lcr2/selector", { position: pos }));
+    dial.appendChild(el);
+  });
+  dialLabelsBuiltCV = true;
+}
+function setDialCV(position) {
+  document.querySelectorAll(".selector-dial-label").forEach(el => el.classList.toggle("active", el.dataset.pos === position));
+  const knob = document.getElementById("dialKnob");
+  const rotation = (90 - SELECTOR_ANGLES_CV[position] + 360) % 360;
+  knob.style.transform = `rotate(${rotation}deg)`;
+}
+
+/* ============ shared render logic (drives both views from one state poll) ============ */
+function renderOvLcd(state) {
+  const lcr2 = state.lcr2;
+  const main = document.getElementById("ovLcdMain");
+  const lcd = document.getElementById("ovLcd");
+
+  if (lcr2.selector === "STOP" && lcr2.menu_field === "PRESET_DIGITS") {
+    main.textContent = lcr2.preset_digits.map((d, i) => i === lcr2.preset_digit_idx ? `[${d}]` : d).join("");
+  } else if (lcr2.selector === "STOP" && lcr2.menu_field === "PROD") {
+    main.textContent = "PROD " + state.active_product.number;
+  } else if (lcr2.selector === "CALIBRATION" && lcr2.menu_field === "K_FACTOR") {
+    main.textContent = fmt(state.active_product.pulses_per_unit, 2);
+  } else {
+    main.textContent = fmt(state.delivery_total_units, 1);
+  }
+  lcd.classList.toggle("idle-theme", false); // LCR-II's real LCD is always the same backlit-yellow tone, no idle/active split like the iQ
+}
+
+function renderProductPills(state) {
+  const row = document.getElementById("productPills");
+  row.innerHTML = "";
+  state.products_brief.forEach((p, idx) => {
+    const pill = document.createElement("button");
+    pill.className = "product-pill" + (idx === state.active_product.number - 1 ? " active" : "");
+    pill.textContent = p.name;
+    pill.addEventListener("click", () => apiPost("/api/lcr2/select_product", { index: idx }));
+    row.appendChild(pill);
+  });
+}
+function populateVcfDropdown(state) {
+  const sel = document.getElementById("vcfType");
+  if (sel.options.length > 0) return;
+  Object.entries(state.vcf_types).forEach(([code, v]) => {
+    const opt = document.createElement("option");
+    opt.value = code; opt.textContent = v.label;
+    if (code === "NONE") opt.selected = true;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", updateVcfParamUI);
+  updateVcfParamUI();
+}
+function updateVcfParamUI() {
+  const code = document.getElementById("vcfType").value;
+  const v = window._lastState.vcf_types[code];
+  document.getElementById("vcfParamLabel").textContent = v.param_label;
+  document.getElementById("vcfRange").textContent =
+    v.param_label === "—" ? `Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}` :
+    `Range: ${v.param_min}-${v.param_max} | Valid temp range: ${v.tmin} to ${v.tmax} ${v.unit}`;
+}
+function renderCalPoints(state) {
+  const tbl = document.getElementById("calPointsTable");
+  const pts = state.active_product.cal_points;
+  let html = "<tr><th>Flow Rate</th><th>% Error</th></tr>";
+  pts.forEach(p => { html += `<tr><td>${fmt(p.flow_rate,2)}</td><td>${fmt(p.pct_error,3)}</td></tr>`; });
+  if (pts.length === 0) html += `<tr><td colspan="2" class="muted">No points yet</td></tr>`;
+  tbl.innerHTML = html;
+}
+function renderDiagnostics(state) {
+  const d = state.diagnostics;
+  document.getElementById("diagTable").innerHTML = `
+    <tr><th>Point</th><th>Reading</th><th>Note</th></tr>
+    <tr><td>J8 #32</td><td>${fmt(d.j8.v32,2)} V</td><td rowspan="3" style="font-size:11px;">${d.j8.interpretation}</td></tr>
+    <tr><td>J8 #33</td><td>${fmt(d.j8.v33,2)} V</td></tr>
+    <tr><td>J8 #34</td><td>${fmt(d.j8.v34,2)} V</td></tr>
+    <tr><td>J14 RTD</td><td>${d.j14_rtd.ohms === null ? "OPEN" : d.j14_rtd.ohms + " ohm"}</td>
+        <td><span class="value-pill"><span class="dot ${d.j14_rtd.continuity_pass ? 'green' : 'red'}"></span>${d.j14_rtd.continuity_pass ? "PASS (100 ohm +/- 20 ohm)" : "FAIL"}</span></td></tr>
+    <tr><td>Supply Voltage</td><td>${fmt(d.power.voltage,1)} V</td>
+        <td>${d.power.faults.length ? '<span class="value-pill"><span class="dot red"></span>' + d.power.faults.join(", ") + '</span>' : '<span class="value-pill"><span class="dot green"></span>OK</span>'}</td></tr>`;
+}
+
+function onState(state) {
+  window._lastState = state;
+
+  // Original View
+  if (ovRotaryCtl) { ovRotaryCtl.setToKey(state.lcr2.selector); highlightOvLabel(state.lcr2.selector); }
+  renderOvLcd(state);
+  renderSeal(document.getElementById("ovSeal"), state.locked);
+  maybeShowPrinterPopup(state);
+
+  // Custom View
+  setDialCV(state.lcr2.selector);
+  document.getElementById("lcdMain").textContent =
+    (state.lcr2.selector === "STOP" && state.lcr2.menu_field === "PRESET_DIGITS")
+      ? state.lcr2.preset_digits.map((d, i) => i === state.lcr2.preset_digit_idx ? `[${d}]` : d).join("")
+      : (state.lcr2.selector === "STOP" && state.lcr2.menu_field === "PROD") ? "PROD " + state.active_product.number
+      : (state.lcr2.selector === "CALIBRATION" && state.lcr2.menu_field === "K_FACTOR") ? fmt(state.active_product.pulses_per_unit, 2)
+      : fmt(state.delivery_total_units, 1);
+  const chips = document.getElementById("lcdChips");
+  chips.innerHTML = "";
+  if (state.delivery_active) chips.innerHTML += `<span class="lcd-status-chip">DELIVERY ACTIVE</span>`;
+  if (state.preset_units) chips.innerHTML += `<span class="lcd-status-chip">PRESET ${fmt(state.preset_units,1)}</span>`;
+  if (state.errors.length) chips.innerHTML += `<span class="lcd-status-chip">FAULT</span>`;
+  document.getElementById("btnSelect").disabled = !["STOP", "CALIBRATION"].includes(state.lcr2.selector);
+  document.getElementById("btnIncrease").disabled = !["STOP", "CALIBRATION"].includes(state.lcr2.selector);
+
+  // Shared deck
+  renderProductPills(state);
+  populateVcfDropdown(state);
+  renderCalPoints(state);
+  renderDiagnostics(state);
+  renderErrorBanner(state, "lcr2", document.getElementById("errorBanner"));
+  document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;
+  document.getElementById("gaugeK").textContent = fmt(state.active_product.pulses_per_unit, 2);
+  document.getElementById("lockHint").textContent = state.locked
+    ? "LOCKED — break the W&M seal (top-right of the instrument) to recalibrate"
+    : "selector in CALIBRATION position";
+}
+</script>
+{% endblock %}

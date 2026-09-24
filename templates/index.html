@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}LCR Meter Family Simulator{% endblock %}
+{% block content %}
+<h1 style="font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.03em; font-size: 26px; color: var(--ui-text-bright); margin-bottom: 6px;">
+  LectroCount Register Simulator
+</h1>
+<p class="muted" style="max-width: 680px;">
+  A working model of three Liquid Controls LectroCount register generations — operator interface,
+  k-Factor calibration, VCF temperature compensation, and the pulser/RTD fault-diagnosis paths — built
+  from the engineering manuals. Pick a meter below; each runs as its own independent instance, so
+  calibrating the LCR-II doesn't touch the LCR 600's state.
+</p>
+
+<div class="home-grid">
+  <a class="home-card" href="/meter/lcr2">
+    <h3>LectroCount LCR&#8209;II</h3>
+    <p>Rotary selector switch, two-button (SELECT / INCREASE) menu navigation, 4 product calibrations.
+       The simplest of the three — closest to the original Lap Pad-driven design.</p>
+    <div class="specs">10,000 Hz pulse max &middot; 4.5A &middot; 6-char LCD</div>
+  </a>
+  <a class="home-card" href="/meter/lcr600">
+    <h3>LectroCount LCR&nbsp;600</h3>
+    <p>Full alphanumeric keypad, 5.7" color screen, and the Point-of-Sale layer: tax categories,
+       cash discounting, priced tickets. 16 product calibrations.</p>
+    <div class="specs">10,000 Hz pulse max &middot; 4.5A &middot; 5.7" QVGA LCD</div>
+  </a>
+  <a class="home-card" href="/meter/lcriq">
+    <h3>LCR.iQ</h3>
+    <p>The current CENTRILOGiQ platform: 7" touchscreen-style UI, Bluetooth/Wi-Fi, the SENSEiQ
+       4-20mA expansion board for tank inventory, and continuously variable digital valve control.</p>
+    <div class="specs">7500 Hz pulse max &middot; 5A &middot; 7" 800x480 TFT</div>
+  </a>
+</div>
+
+<div class="card" style="margin-top: 28px;">
+  <h2>What's actually simulated</h2>
+  <ul class="checklist">
+    <li>k-Factor (PULSES/UNIT) calibration: overwrite a prover quantity, the register backs out a new k-Factor exactly per the manual's formula</li>
+    <li>VCF temperature compensation across all 9 documented types (Linear, API 24/54/54B/6B/54C/54D, NH3), with the documented Tmin/Tmax domain check (VCF DOMAIN ERROR outside range)</li>
+    <li>A real Pt100 RTD curve (IEC 60751), so the temperature reading, the +/-0.3&deg;C field-adjustment ceiling, and the 100&Omega;&plusmn;20&Omega; continuity check are all internally consistent</li>
+    <li>Multi-point calibration's duplicate-flow-rate and adjacent-0.25% validation rules</li>
+    <li>A background pulser thread reproducing the exact J8 #32/#33/#34 fault-voltage signatures for idle / stalled / good-flow conditions</li>
+    <li>Product-specific UI: LCR-II's rotary switch + 2-button menu, LCR-600's POS tax/discount engine, LCR.iQ's wireless pairing flow and SENSEiQ tank-level loop inputs</li>
+  </ul>
+</div>
+{% endblock %}
