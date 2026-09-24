@@ -485,6 +485,12 @@ def lcriq_analog_input():
 #  Interface Document — see meter_core/serial_bridge.py for details.          #
 # ─────────────────────────────────────────────────────────────────────────── #
 
+@app.route("/serial")
+def serial_monitor_page():
+    """Dedicated full-page serial monitor."""
+    return render_template("serial_monitor.html")
+
+
 @app.route("/api/serial/status", methods=["GET"])
 def serial_status():
     return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
@@ -492,21 +498,16 @@ def serial_status():
 
 @app.route("/api/serial/config", methods=["POST"])
 def serial_config():
-    """Body: {port?, baud?, mode?, lcp_node_address?}"""
+    """Body: {port?, baud?, mode?, lcp_node_address?, auto_detect?, poll_interval_ms?}"""
     try:
         body = request.get_json(force=True) or {}
         cfg = _serial_bridge.config
-        if "port" in body:
-            cfg.port = body["port"] or None
-        if "baud" in body:
-            cfg.baud = int(body["baud"])
-        if "mode" in body:
-            from meter_core.serial_bridge import MODE_ACT_AS_METER, MODE_PASSIVE_MONITOR
-            if body["mode"] not in (MODE_ACT_AS_METER, MODE_PASSIVE_MONITOR):
-                return error_response(Exception("Unknown mode"))
-            cfg.mode = body["mode"]
-        if "lcp_node_address" in body:
-            cfg.lcp_node_address = int(body["lcp_node_address"])
+        if "port"             in body: cfg.port             = body["port"] or None
+        if "baud"             in body: cfg.baud             = int(body["baud"])
+        if "mode"             in body: cfg.mode             = body["mode"]
+        if "lcp_node_address" in body: cfg.lcp_node_address = int(body["lcp_node_address"])
+        if "auto_detect"      in body: cfg.auto_detect      = bool(body["auto_detect"])
+        if "poll_interval_ms" in body: cfg.poll_interval_ms = max(100, int(body["poll_interval_ms"]))
         return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
     except Exception as e:
         return error_response(e)

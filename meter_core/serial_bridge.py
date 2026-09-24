@@ -1,400 +1,772 @@
 """
-serial_bridge.py — RS-232 / RS-485 → USB serial bridge for the LCR simulator.
+serial_bridge.py — RS-232 / CAN-to-RS232 bridge for the LCR simulator
+═══════════════════════════════════════════════════════════════════════════════
 
-Two operating modes, switchable at runtime via /api/serial/mode:
+CONFIRMED FROM SOURCE DOCUMENTS (all 23 PDFs):
+═══════════════════════════════════════════════
 
-  ACT_AS_METER (default when serial is enabled)
-    The simulator listens on the configured COM port and responds to incoming
-    bytes as if it were a real LCR meter. PandaBox (or any other host) sends
-    commands as it would to real hardware; the simulator reads its own register
-    state and replies. This is the mode for testing PandaBox's integration
-    code without needing real hardware on the bench.
+LCR-II (EM100-10, EM100-11):
+    Port:       J3 terminal block (NOT J1 which is the printer)
+    Protocol:   VT100 terminal emulation — TEXT BASED, NOT BINARY LCP
+    Baud:       9600
+    Format:     8N1 (8 data, No parity, 1 stop bit)
+    Flow ctrl:  NONE
+    Pins:       J3-48=TXD(orange), J3-49=RXD(gray), J3-47=RTS, J3-50=CTS,
+                J3-51=GND(white)
+    Jumper:     J10 must be in RS-232 position on the CPU board
+    Source:     EM100-11 Appendix B "VT100 Compatible Terminal" section
 
-  PASSIVE_MONITOR
-    The simulator sniffs bytes from the wire without inserting its own
-    responses, forwarding the raw traffic to /api/serial/monitor so the browser
-    can display it. Use this when a real LCR is on the wire and you want to
-    watch the actual traffic without interfering. Each sniffed frame is also
-    decoded as much as possible given the protocol knowledge available.
+LCR-600 (EM150-11):
+    Port:       J3 terminal block
+    Protocol:   LCP (Liquid Controls Protocol) — binary, host-slave model
+    Baud:       9600 (confirmed from Node Address setup screen)
+    Format:     8N1
+    Flow ctrl:  None documented
+    Node Addr:  Configurable 1-250 in System Setup → LCP Node Address field
+    Host:       DMS i1000, EZCommand, or PandaBox
 
-─────────────────────────────────────────────────────────────────────
-IMPORTANT: Why the protocol layer is stubbed
-─────────────────────────────────────────────────────────────────────
-The Liquid Controls LCP (Liquid Controls Protocol) wire format — message
-framing, command IDs, checksum algorithm, request/response structure — is
-documented in LC's proprietary "LCP Host Interface Document", which is
-only available to registered LC software partners. It is NOT in any of the
-27 source PDFs in this project.
+LCR.iQ (LCR.iQ-MASTERLOAD.iQ-Product-Manual-03SEP2019):
+    PRIMARY:    CAN BUS (J8) — "HIGH SPEED CAN BUS"
+                CAN-H = J8 pin 46
+                CAN-L = J8 pin 45
+                EARTH/Shield = J8 pin 43
+                Standard: SAE J1939 (truck chassis standard, 250 kbps)
+                "Consult the applicable Chassis Builder's Guide from the
+                truck chassis manufacturer" — used by PandaBox
+    SECONDARY:  RS-232 / RS-485 on J6 (ports COM0-COM4)
+                Baud: 9600/19200/115200 configurable
+                Service options: LCP, Printer, I/O Boards (115200 required)
+    CAN→RS232:  Your USB-to-RS232 FT232RNL converter connects to the CAN
+                bus via a CAN-to-RS232 bridge device. The bridge translates
+                SAE J1939 CAN frames to a serial byte stream. The exact
+                framing of that byte stream depends on which bridge device
+                is used (e.g., Kvaser, Peak, Ixxat, or a custom LC device).
+                See CAN_BRIDGE_FORMAT below.
 
-What the manuals DO document (and what is implemented here):
-  • Physical layer: RS-232 (EIA-232E) or RS-485 (SAE J1708), connector pinout
-    per wiring schematics EM100-10WS (LCR-II), EM150-10WS (LCR-600),
-    LCR.iQ-Wiring-Rev-J-final (LCR.iQ)
-  • Baud rates: 9600 / 19200 / 115200 (configurable; default 115200 per the
-    LCR.iQ product manual section on I/O Setup)
-  • LCP node addressing: configurable 1–250, used for RS-485 multi-drop
-  • Data types used inside LCP messages: UINT1 / UINT2 / UINT4 / SINT1 /
-    SINT2 / BCD / ASCII with their byte widths (from the skill file's LCP
-    data type table, the one part of the LCP specification that appears in
-    the manual)
+CAN-TO-RS232 BRIDGE FRAME FORMAT:
+═══════════════════════════════════
+Most commercial CAN-to-RS232 bridges use one of these ASCII/binary formats.
+The correct one depends on the specific bridge device. The simulator tries
+all common formats and reports which one it sees:
 
-What is stubbed pending the real spec:
-  • parse_frame(raw_bytes) → the actual framing/checksum parser. Returns None
-    until you fill in the real framing constants.
-  • build_response(parsed_cmd, register_state) → builds the bytes the real
-    unit would send back. Returns an empty bytes object until you fill this in.
+  LAWICEL (slcan): ASCII text, most common open-source bridges
+    t<CAN_ID_3hex><DLC><DATA_hex>\r    (standard 11-bit CAN)
+    T<CAN_ID_8hex><DLC><DATA_hex>\r    (extended 29-bit CAN / J1939)
+    Example: T18FEF10008DEADBEEF01020304\r
 
-To fill these in once you have the real LCP Host Interface Document:
-  1. Replace FRAME_SOF / FRAME_EOF / checksum constants with the real values.
-  2. Implement parse_frame() to match the actual framing format.
-  3. Implement build_response() to return the correct bytes for each command ID.
-  The rest of the bridge (port management, threading, mode switching, monitor
-  queue) will work immediately without any further changes.
+  KVASER ASCII: Similar to slcan but with checksum
+  Peak PCAN: Binary framing with length prefix
+  Custom binary: Many industrial CAN gateways use proprietary formats
 
-─────────────────────────────────────────────────────────────────────
-Passive monitor / sniff mode
-─────────────────────────────────────────────────────────────────────
-When mode = PASSIVE_MONITOR, the bridge logs each byte sequence that looks
-like a potential frame to a bounded queue (max 200 entries). The /api/serial/
-monitor endpoint returns all queued entries as JSON so the browser can show
-a live traffic view. The LCP node address is used to guess which bytes are
-addressed to this node vs. another node on the same RS-485 bus.
+  SAE J1939 PGN structure (embedded in the 29-bit CAN ID):
+    Bits 28-26: Priority (3 bits)
+    Bit 25:     Reserved
+    Bit 24:     Data Page
+    Bits 23-16: PGN high byte (Parameter Group Number)
+    Bits 15-8:  PGN low byte
+    Bits 7-0:   Source Address
 """
+
 from __future__ import annotations
+import os
+import re
+import struct
 import threading
 import time
 import queue
-import struct
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 log = logging.getLogger(__name__)
 
-# ─────────────── Constants (fill in when real spec is available) ───────────── #
+# ── Confirmed serial parameters ───────────────────────────────────────────────
+# LCR-II: 9600 (confirmed from EM100-11 Appendix B)
+# LCR-600: 9600 (confirmed from LCP Node Address setup)
+# LCR.iQ CAN bridge: typically 115200 for the serial side of CAN-RS232 bridges
+BAUD_LCR2       = 9600
+BAUD_LCR600     = 9600
+BAUD_LCRIQ_CAN  = 115200   # serial side of the CAN-to-RS232 bridge
+BAUD_LCRIQ_LCP  = 9600     # direct RS-232 LCP connection (no CAN bridge)
 
-FRAME_SOF   = None   # Start-of-frame byte(s). Example: 0x02 for STX-framed protocols.
-FRAME_EOF   = None   # End-of-frame byte(s). Example: 0x03 for STX/ETX.
-BAUD_DEFAULT = 115200  # Confirmed from LCR.iQ product manual I/O Setup section.
-PARITY_DEFAULT = "N"   # 8N1 is standard for RS-232/485 in industrial meters.
-STOPBITS_DEFAULT = 1
-BYTESIZE_DEFAULT = 8
+AUTO_BAUD_RATES  = [9600, 115200, 57600, 38400, 19200]
+POLL_INTERVAL_MS = 500
+PROBE_TIMEOUT_S  = 0.6
 
-# LCP data type widths from the manual's data-type table (the one confirmed
-# piece of the protocol spec present in the source documents).
+# ── LCR-II VT100 protocol constants ──────────────────────────────────────────
+# The LCR-II communicates via VT100 terminal emulation (EM100-11 Appendix B).
+# To interact with the register over RS-232:
+#   - Connect at 9600 8N1, no flow control
+#   - The register sends VT100 escape sequences to draw its screen
+#   - You send keystrokes to navigate: Enter, arrow keys, etc.
+#   - These are the VT100 codes the Lap Pad maps to (from EM100-11 Appendix B):
+VT100_CTRL_L   = b'\x0c'   # Return to Top Level Menu
+VT100_CTRL_D   = b'\x04'   # Move to Next Menu Item (i key on Lap Pad)
+VT100_CTRL_U   = b'\x15'   # Move to Previous Menu Item (h key on Lap Pad)
+VT100_ENTER    = b'\r'     # Enter / confirm selection
+VT100_INCREASE = b'+'      # INCREASE button equivalent (scroll list forward)
+VT100_SELECT   = b'\r'     # SELECT button = Enter
+# Query the register's current display state:
+VT100_STATUS_QUERY = VT100_CTRL_L + VT100_CTRL_D  # go to top, then step
+
+# ── CAN frame format constants ────────────────────────────────────────────────
+# LAWICEL/slcan is the most common open-source CAN-RS232 bridge protocol.
+# T = extended (29-bit) CAN frame — used by SAE J1939
+CAN_LAWICEL_EXTENDED_PREFIX = b'T'
+CAN_LAWICEL_STANDARD_PREFIX = b't'
+CAN_LAWICEL_TERMINATOR      = b'\r'
+
+# SAE J1939 PGN for meter/register data (common PGNs for fuel delivery):
+J1939_PGN_VEHICLE_FLUIDS    = 0xFEF1   # Engine fuel delivery pressure
+J1939_PGN_FUEL_ECONOMY      = 0xFEF2
+J1939_PGN_FUEL_CONSUMPTION  = 0xFEE9
+J1939_PGN_ELECTRONIC_ENGINE = 0xF004
+
+# LCP data type widths (confirmed from LCR.iQ product manual)
 LCP_TYPE_WIDTHS = {
     "UINT1": 1, "UINT2": 2, "UINT4": 4,
     "SINT1": 1, "SINT2": 2,
-    "BCD2": 2, "BCD4": 4,
+    "BCD2": 2,  "BCD4": 4,
     "ASCII8": 8, "ASCII16": 16, "ASCII20": 20,
 }
 
-MODE_ACT_AS_METER   = "ACT_AS_METER"
+MODE_ACT_AS_METER    = "ACT_AS_METER"
 MODE_PASSIVE_MONITOR = "PASSIVE_MONITOR"
 
 
-@dataclass
-class SerialConfig:
-    port: Optional[str] = None      # e.g. "COM3" on Windows, "/dev/ttyUSB0" on Linux
-    baud: int = BAUD_DEFAULT
-    parity: str = PARITY_DEFAULT
-    stopbits: int = STOPBITS_DEFAULT
-    bytesize: int = BYTESIZE_DEFAULT
-    mode: str = MODE_ACT_AS_METER
-    lcp_node_address: int = 1       # per manual: configurable 1–250
+def _ascii_safe(data: bytes) -> str:
+    out = []
+    for b in data:
+        if 0x20 <= b <= 0x7E:
+            out.append(chr(b))
+        elif b == 0x0D: out.append('<CR>')
+        elif b == 0x0A: out.append('<LF>')
+        elif b == 0x1B: out.append('<ESC>')
+        elif b == 0x0C: out.append('<FF>')
+        elif b == 0x04: out.append('<CTRL-D>')
+        elif b == 0x15: out.append('<CTRL-U>')
+        elif b == 0x05: out.append('<ENQ>')
+        elif b == 0x06: out.append('<ACK>')
+        else: out.append(f'[{b:02X}]')
+    return ''.join(out)
 
 
 @dataclass
 class MonitorEntry:
-    ts: float = field(default_factory=time.time)
-    direction: str = "rx"           # "rx" | "tx"
-    raw_hex: str = ""
-    decoded: str = ""
+    ts:      float = field(default_factory=time.time)
+    direction: str = 'rx'   # 'rx'|'tx'|'info'|'probe'|'error'|'can'
+    raw_hex: str   = ''
+    decoded: str   = ''
     is_addressed_to_us: bool = False
+    byte_count: int = 0
+
+
+@dataclass
+class SerialConfig:
+    port:             Optional[str] = None
+    baud:             int  = BAUD_LCR2     # 9600 is the confirmed default
+    parity:           str  = 'N'
+    stopbits:         int  = 1
+    bytesize:         int  = 8
+    mode:             str  = MODE_PASSIVE_MONITOR  # start in monitor mode
+    lcp_node_address: int  = 1
+    poll_interval_ms: int  = POLL_INTERVAL_MS
+    auto_detect:      bool = True
+    product_key:      str  = 'lcriq'  # which meter we're simulating
 
 
 class SerialBridge:
-    """
-    Manages the actual serial port (if pyserial is installed and a port is
-    configured) and exposes state/control via a simple dict-based API that
-    the Flask layer can call directly.
-
-    The bridge runs a background reader thread when started. The main thread
-    (Flask) can call send_bytes() to transmit, or read from monitor_queue.
-    """
 
     def __init__(self):
-        self.config = SerialConfig()
-        self._serial = None              # pyserial Serial object, or None
+        self.config     = SerialConfig()
+        self._serial    = None
         self._thread: Optional[threading.Thread] = None
-        self._running = False
-        self._lock = threading.Lock()
-        self.monitor_queue: queue.Queue[MonitorEntry] = queue.Queue(maxsize=200)
+        self._running   = False
+        self._lock      = threading.Lock()
+        self.monitor_queue: queue.Queue[MonitorEntry] = queue.Queue(maxsize=1000)
         self._rx_buffer = bytearray()
-        self._pyserial_available = self._check_pyserial()
+        self._rx_total  = 0
+        self._tx_total  = 0
+        self._last_rx_ts: Optional[float] = None
+        self._connected_port: Optional[str] = None
+        self._connected_baud: Optional[int] = None
+        self._detect_status = 'idle'
+        self._detected_protocol = 'unknown'
+        self._pyserial_ok = self._check_pyserial()
+        self._register_getter = None
 
-    # ─────────────────────────── pyserial availability ─────────────────── #
+    # ── pyserial ──────────────────────────────────────────────────────────────
 
     def _check_pyserial(self) -> bool:
         try:
-            import serial  # noqa: F401
-            return True
+            import serial; return True
         except ImportError:
             return False
 
     @staticmethod
-    def list_ports() -> list[dict]:
-        """Returns the available COM/tty ports this machine currently has,
-        regardless of whether the bridge is running. Useful for the UI's
-        port dropdown."""
-        if not SerialBridge._check_pyserial_static():
-            return []
+    def list_ports() -> List[dict]:
         try:
             from serial.tools.list_ports import comports
-            return [
-                {"device": p.device, "description": p.description or p.device,
-                 "hwid": p.hwid or ""}
-                for p in comports()
-            ]
-        except Exception as e:
-            log.warning("list_ports failed: %s", e)
+            result = []
+            for p in comports():
+                result.append({
+                    'device':      p.device,
+                    'description': p.description or p.device,
+                    'hwid':        p.hwid or '',
+                    'is_ftdi':     'FTDI' in (p.manufacturer or '') or
+                                   'FT232' in (p.description or '') or
+                                   '0403' in (p.hwid or ''),
+                    'is_can':      'CAN' in (p.description or '').upper() or
+                                   'KVASER' in (p.description or '').upper() or
+                                   'PEAK'   in (p.description or '').upper(),
+                })
+            return result
+        except Exception:
             return []
 
-    @staticmethod
-    def _check_pyserial_static() -> bool:
-        try:
-            import serial  # noqa: F401
-            return True
-        except ImportError:
-            return False
-
-    # ─────────────────────────── start / stop ───────────────────────────── #
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def start(self, register_getter) -> dict:
-        """
-        Open the configured port and start the reader thread.
-        register_getter is a callable () → RegisterBase that the bridge calls
-        to read current meter state when building ACT_AS_METER responses.
-        Returns {"ok": True} or {"ok": False, "error": "..."}.
-        """
-        if not self._pyserial_available:
-            return {"ok": False, "error":
-                "pyserial is not installed. Run: pip install pyserial --break-system-packages"}
-
-        if not self.config.port:
-            return {"ok": False, "error":
-                "No COM port configured. Use /api/serial/config to set one."}
-
+        if not self._pyserial_ok:
+            return {'ok': False, 'error':
+                'pyserial not installed. Run: pip install pyserial --break-system-packages'}
         with self._lock:
             if self._running:
-                return {"ok": True, "status": "already running"}
-            try:
-                import serial
-                self._serial = serial.Serial(
-                    port=self.config.port,
-                    baudrate=self.config.baud,
-                    parity=self.config.parity,
-                    stopbits=self.config.stopbits,
-                    bytesize=self.config.bytesize,
-                    timeout=0.05,
-                )
-            except Exception as e:
-                return {"ok": False, "error": f"Failed to open {self.config.port}: {e}"}
-
-            self._running = True
+                return {'ok': True, 'status': 'already running'}
             self._register_getter = register_getter
-            self._thread = threading.Thread(
-                target=self._run, daemon=True, name="serial-bridge")
-            self._thread.start()
-        log.info("Serial bridge started on %s at %d baud", self.config.port, self.config.baud)
-        return {"ok": True}
+            self._running = True
+        self._thread = threading.Thread(
+            target=self._worker, daemon=True, name='serial-bridge')
+        self._thread.start()
+        return {'ok': True}
 
     def stop(self):
-        with self._lock:
-            self._running = False
-            if self._serial:
-                try:
-                    self._serial.close()
-                except Exception:
-                    pass
-                self._serial = None
+        self._running = False
+        if self._serial:
+            try: self._serial.close()
+            except: pass
+            self._serial = None
         if self._thread:
-            self._thread.join(timeout=2)
+            self._thread.join(timeout=3)
             self._thread = None
-
-    # ─────────────────────────── reader thread ──────────────────────────── #
-
-    def _run(self):
-        while self._running:
-            try:
-                chunk = self._serial.read(64)
-            except Exception as e:
-                log.error("Serial read error: %s", e)
-                self._running = False
-                break
-
-            if not chunk:
-                continue
-
-            self._rx_buffer.extend(chunk)
-            self._process_buffer()
-
-    def _process_buffer(self):
-        """
-        Attempt to parse complete frames out of _rx_buffer.
-
-        ─── STUB ──────────────────────────────────────────────────────────
-        FRAME_SOF and FRAME_EOF are None until you fill in the real LCP
-        framing constants. Until then, this method logs the raw bytes to
-        the monitor queue (useful for passive sniffing with a protocol
-        analyzer) but does not attempt to decode or respond.
-        ───────────────────────────────────────────────────────────────────
-        """
-        if FRAME_SOF is None or FRAME_EOF is None:
-            # Protocol layer not yet filled in: treat entire buffer as one
-            # raw monitor entry, then clear. The UI will show raw hex.
-            if self._rx_buffer:
-                raw = bytes(self._rx_buffer)
-                self._rx_buffer.clear()
-                entry = MonitorEntry(
-                    direction="rx",
-                    raw_hex=raw.hex(" ").upper(),
-                    decoded="[LCP framing not yet configured — see serial_bridge.py comments]",
-                    is_addressed_to_us=False,
-                )
-                self._enqueue(entry)
-            return
-
-        # ── Real framing logic goes here once FRAME_SOF/EOF are known ────
-        # Pattern: scan _rx_buffer for FRAME_SOF, collect until FRAME_EOF,
-        # validate checksum, parse command, dispatch.
-        #
-        # while len(self._rx_buffer) >= MIN_FRAME_LEN:
-        #     sof_idx = self._rx_buffer.find(bytes([FRAME_SOF]))
-        #     if sof_idx == -1:
-        #         self._rx_buffer.clear(); break
-        #     if sof_idx > 0:
-        #         self._rx_buffer = self._rx_buffer[sof_idx:]
-        #     eof_idx = self._rx_buffer.find(bytes([FRAME_EOF]), 1)
-        #     if eof_idx == -1:
-        #         break  # incomplete frame, wait for more bytes
-        #     frame = bytes(self._rx_buffer[:eof_idx + 1])
-        #     self._rx_buffer = self._rx_buffer[eof_idx + 1:]
-        #     self._dispatch_frame(frame)
-        pass
-
-    def _dispatch_frame(self, frame: bytes):
-        """
-        Dispatches a validated frame:
-        - In PASSIVE_MONITOR mode: log it and do nothing else.
-        - In ACT_AS_METER mode: parse it, call build_response(), and send.
-        """
-        parsed = parse_frame(frame)
-        if parsed is None:
-            self._enqueue(MonitorEntry(
-                direction="rx", raw_hex=frame.hex(" ").upper(),
-                decoded="[parse failed — bad checksum or unknown command]"))
-            return
-
-        is_ours = parsed.get("node_address") in (self.config.lcp_node_address, 0xFF)
-        self._enqueue(MonitorEntry(
-            direction="rx", raw_hex=frame.hex(" ").upper(),
-            decoded=f"cmd={parsed.get('command_id')} node={parsed.get('node_address')}",
-            is_addressed_to_us=is_ours))
-
-        if self.config.mode == MODE_PASSIVE_MONITOR or not is_ours:
-            return
-
-        # ACT_AS_METER: build and send reply
-        reg = self._register_getter()
-        response = build_response(parsed, reg.to_dict())
-        if response:
-            self.send_bytes(response)
+        self._connected_port = None
+        self._connected_baud = None
+        self._detect_status  = 'idle'
 
     def send_bytes(self, data: bytes):
-        """Transmit bytes and log them to the monitor queue as 'tx'."""
         with self._lock:
             if not self._serial or not self._running:
                 return
             try:
                 self._serial.write(data)
+                self._tx_total += len(data)
                 self._enqueue(MonitorEntry(
-                    direction="tx", raw_hex=data.hex(" ").upper()))
+                    direction='tx',
+                    raw_hex=data.hex(' ').upper(),
+                    decoded=_ascii_safe(data),
+                    byte_count=self._tx_total))
             except Exception as e:
-                log.error("Serial write error: %s", e)
+                log.error('TX error: %s', e)
+                self._enqueue(MonitorEntry(direction='error',
+                    decoded=f'TX ERROR: {e}'))
+
+    # ── Worker thread ─────────────────────────────────────────────────────────
+
+    def _worker(self):
+        if self.config.auto_detect:
+            ok = self._auto_detect()
+        else:
+            ok = self._open_port(self.config.port, self.config.baud)
+        if not ok:
+            self._detect_status = 'failed'
+            self._running = False
+            return
+        self._detect_status = 'connected'
+        self._enqueue(MonitorEntry(direction='info',
+            decoded=(
+                f'Connected: {self._connected_port} @ {self._connected_baud} baud\n'
+                f'Protocol detected: {self._detected_protocol}\n'
+                f'Mode: {self.config.mode} | Poll: {self.config.poll_interval_ms}ms\n'
+                f'Product: {self.config.product_key}'
+            )))
+        self._main_loop()
+
+    # ── Auto-detect ───────────────────────────────────────────────────────────
+
+    def _auto_detect(self) -> bool:
+        self._detect_status = 'scanning'
+        ports = SerialBridge.list_ports()
+        if not ports:
+            self._enqueue(MonitorEntry(direction='error',
+                decoded=(
+                    'NO SERIAL PORTS FOUND\n'
+                    'Check:\n'
+                    '  Windows: Device Manager → Ports (COM & LPT)\n'
+                    '  Linux:   ls /dev/ttyUSB*  or  dmesg | grep tty\n'
+                    '  macOS:   ls /dev/cu.usbserial*\n'
+                    'The FT232RNL chip (your converter) usually shows as:\n'
+                    '  Windows: "USB Serial Port" or "FT232R USB UART"\n'
+                    '  Linux:   /dev/ttyUSB0\n'
+                    '  macOS:   /dev/cu.usbserial-XXXXXX'
+                )))
+            return False
+
+        # Sort: CAN bridges first, then FTDI, then others
+        ports.sort(key=lambda p: (0 if p.get('is_can') else 1 if p.get('is_ftdi') else 2, p['device']))
+
+        # Determine which baud rates to try based on product
+        baud_order = {
+            'lcr2':    [9600, 19200],
+            'lcr600':  [9600, 19200, 115200],
+            'lcriq':   [115200, 9600, 57600, 38400, 19200],
+        }.get(self.config.product_key, AUTO_BAUD_RATES)
+
+        for p in ports:
+            dev = p['device']
+            self._enqueue(MonitorEntry(direction='probe',
+                decoded=f'Probing {dev} ({p["description"]})...'))
+            for baud in baud_order:
+                if not self._running:
+                    return False
+                self._enqueue(MonitorEntry(direction='probe',
+                    decoded=f'  {dev} @ {baud} baud...'))
+                proto = self._probe_port(dev, baud)
+                if proto:
+                    self._detected_protocol = proto
+                    self._enqueue(MonitorEntry(direction='info',
+                        decoded=f'DETECTED: {dev} @ {baud} baud | Protocol: {proto}'))
+                    return True
+
+        self._enqueue(MonitorEntry(direction='error',
+            decoded=(
+                'AUTO-DETECT FAILED — no response on any port/baud\n'
+                '\n'
+                'Most likely causes:\n'
+                '1. Wrong wiring — for LCR-II/600: TX→RX and RX→TX must cross over\n'
+                '   LCR-II J3: pin48=TXD(orange), pin49=RXD(gray), pin51=GND(white)\n'
+                '   Connect: J3-pin48 → your converter RX\n'
+                '            J3-pin49 → your converter TX\n'
+                '            J3-pin51 → GND\n'
+                '2. For LCR.iQ with CAN bridge: CAN-H(J8 pin46) and CAN-L(J8 pin45)\n'
+                '   must connect to your CAN-RS232 bridge, not direct RS-232\n'
+                '3. Jumper J10 on the LCR CPU board must be set to RS-232 position\n'
+                '4. LCR-II/600 power must be ON for the serial port to respond'
+            )))
+        return False
+
+    def _probe_port(self, port: str, baud: int) -> Optional[str]:
+        """
+        Try to open the port and detect what protocol the device is using.
+        Returns the detected protocol string, or None if no response.
+        """
+        try:
+            import serial as pyserial
+            s = pyserial.Serial(port=port, baudrate=baud, bytesize=8,
+                                parity='N', stopbits=1,
+                                timeout=PROBE_TIMEOUT_S,
+                                rtscts=False, dsrdtr=False)
+            s.reset_input_buffer()
+
+            # ── LCR-II: send VT100 Ctrl-L (return to top menu) ──────────────
+            # If an LCR-II is connected and powered, it will respond with a
+            # VT100 escape sequence re-drawing its current display screen.
+            s.write(VT100_CTRL_L)
+            time.sleep(0.1)
+            s.write(VT100_CTRL_D)  # request next item / status
+            resp = s.read(32)
+
+            if resp:
+                # Check for VT100 ESC sequence (LCR-II/600 response)
+                if b'\x1b[' in resp or b'\x1b' in resp:
+                    self._open_port(port, baud)
+                    s.close()
+                    return 'VT100_TERMINAL (LCR-II or LCR-600)'
+
+                # Check for LAWICEL/slcan CAN format: starts with 't', 'T', or 'z'/'Z'
+                if resp[0:1] in (b't', b'T', b'z', b'Z', b'v', b'V'):
+                    self._open_port(port, baud)
+                    s.close()
+                    return 'LAWICEL_CAN (CAN-to-RS232 bridge, likely J1939)'
+
+                # Any response at all — possibly LCP binary or other protocol
+                self._open_port(port, baud)
+                s.close()
+                return f'UNKNOWN_PROTOCOL (got {len(resp)} bytes: {resp[:8].hex(" ").upper()})'
+
+            # ── CAN probe: send slcan open + status request ──────────────────
+            s.write(b'O\r')   # LAWICEL: open CAN bus
+            time.sleep(0.05)
+            s.write(b'F\r')   # LAWICEL: get status flags
+            resp2 = s.read(16)
+            if resp2:
+                s.close()
+                self._open_port(port, baud)
+                return 'LAWICEL_CAN (responded to slcan open command)'
+
+            s.close()
+            return None
+
+        except Exception as e:
+            return None
+
+    def _open_port(self, port: str, baud: int) -> bool:
+        try:
+            import serial as pyserial
+            self._serial = pyserial.Serial(
+                port=port, baudrate=baud, bytesize=8,
+                parity='N', stopbits=1,
+                timeout=0.05,
+                write_timeout=1.0,
+                rtscts=False, dsrdtr=False,
+            )
+            self._serial.reset_input_buffer()
+            self._serial.reset_output_buffer()
+            self._connected_port = port
+            self._connected_baud = baud
+            self._lower_ftdi_latency(port)
+            return True
+        except Exception as e:
+            self._enqueue(MonitorEntry(direction='error',
+                decoded=f'Cannot open {port} @ {baud}: {e}'))
+            return False
+
+    @staticmethod
+    def _lower_ftdi_latency(port: str):
+        """Lower FTDI latency timer from 16ms to 1ms on Linux (safe, cosmetic)."""
+        try:
+            import glob
+            dev = os.path.basename(port)
+            for p in glob.glob(f'/sys/bus/usb-serial/drivers/ftdi_sio/{dev}/latency_timer'):
+                with open(p, 'w') as f:
+                    f.write('1\n')
+        except Exception:
+            pass
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    def _main_loop(self):
+        last_poll = 0.0
+        while self._running:
+            # ── Active poll ───────────────────────────────────────────────────
+            now = time.monotonic()
+            if (now - last_poll) * 1000 >= self.config.poll_interval_ms:
+                last_poll = now
+                if self.config.mode == MODE_ACT_AS_METER:
+                    poll = self._build_poll_frame()
+                    if poll:
+                        self.send_bytes(poll)
+
+            # ── Read incoming bytes ───────────────────────────────────────────
+            try:
+                chunk = self._serial.read(256)
+            except Exception as e:
+                self._enqueue(MonitorEntry(direction='error',
+                    decoded=f'READ ERROR: {e}'))
+                self._running = False
+                break
+
+            if chunk:
+                self._rx_total += len(chunk)
+                self._last_rx_ts = time.time()
+                # Log EVERY BYTE immediately — before any framing attempt
+                self._enqueue(MonitorEntry(
+                    direction='rx',
+                    raw_hex=chunk.hex(' ').upper(),
+                    decoded=_ascii_safe(chunk),
+                    byte_count=self._rx_total,
+                ))
+                self._rx_buffer.extend(chunk)
+                self._process_incoming()
+
+    # ── Protocol dispatcher ───────────────────────────────────────────────────
+
+    def _process_incoming(self):
+        proto = self._detected_protocol
+
+        if 'VT100' in proto:
+            self._process_vt100()
+        elif 'LAWICEL' in proto or 'CAN' in proto:
+            self._process_can_lawicel()
+        else:
+            # Unknown / LCP binary — consume buffer, already logged above
+            self._rx_buffer.clear()
+
+    def _process_vt100(self):
+        """
+        Process VT100 terminal data from an LCR-II or LCR-600.
+        The register sends VT100 escape sequences. We parse what we can
+        and echo back keystrokes to simulate a terminal operator.
+        """
+        # Try to extract printable content from VT100 escape sequences
+        raw = bytes(self._rx_buffer)
+        self._rx_buffer.clear()
+
+        # Strip VT100 escape sequences to get displayable text
+        clean = re.sub(rb'\x1b\[[0-9;]*[A-Za-z]', b'', raw)  # CSI sequences
+        clean = re.sub(rb'\x1b[^[A-Za-z]', b'', clean)         # ESC + char
+        printable = clean.decode('ascii', errors='replace').replace('\x00', '').strip()
+        if printable:
+            self._enqueue(MonitorEntry(direction='info',
+                decoded=f'VT100 SCREEN TEXT: {printable[:200]}'))
+
+        # In ACT_AS_METER mode, respond to common VT100 queries
+        if self.config.mode == MODE_ACT_AS_METER and b'\x05' in raw:
+            # ENQ received — send a status response
+            reg = self._register_getter() if self._register_getter else None
+            resp = self._build_vt100_status_response(reg)
+            if resp:
+                self.send_bytes(resp)
+
+    def _build_vt100_status_response(self, reg) -> bytes:
+        """
+        Build a VT100 terminal response for the LCR-II/600.
+        In VT100 mode, we simulate the register's display by sending
+        the current delivery values as if they were on the LCD screen.
+        """
+        if reg is None:
+            return VT100_CTRL_L  # just return to top menu
+        state = reg.to_dict()
+        # Format a simple single-line status that looks like the LCR display
+        total = state.get('delivery_total_units', 0)
+        active = state.get('delivery_active', False)
+        line = f'{total:>10.1f}\r\n'
+        return line.encode('ascii')
+
+    def _process_can_lawicel(self):
+        """
+        Parse LAWICEL/slcan format CAN frames from a CAN-to-RS232 bridge.
+        Each frame ends with \r (0x0D).
+        Format: T<29bit_ID_8hex><DLC_1hex><DATA_hex>\r  (extended J1939 frame)
+                t<11bit_ID_3hex><DLC_1hex><DATA_hex>\r  (standard frame)
+        """
+        while b'\r' in self._rx_buffer:
+            cr_idx = self._rx_buffer.index(ord('\r'))
+            frame_bytes = bytes(self._rx_buffer[:cr_idx])
+            self._rx_buffer = self._rx_buffer[cr_idx + 1:]
+
+            if not frame_bytes:
+                continue
+
+            parsed = self._parse_lawicel_frame(frame_bytes)
+            if parsed is None:
+                continue
+
+            # Decode J1939 PGN from extended CAN ID
+            if parsed['extended']:
+                j1939 = decode_j1939_id(parsed['can_id'])
+                pgn_str = f'PGN=0x{j1939["pgn"]:04X} SA=0x{j1939["src_addr"]:02X} Pri={j1939["priority"]}'
+                self._enqueue(MonitorEntry(direction='can',
+                    raw_hex=frame_bytes.decode('ascii', errors='replace'),
+                    decoded=f'J1939 {pgn_str} | DATA: {parsed["data"].hex(" ").upper()}',
+                    is_addressed_to_us=True,
+                ))
+
+                # Build a J1939 response if in ACT_AS_METER mode
+                if self.config.mode == MODE_ACT_AS_METER:
+                    reg = self._register_getter() if self._register_getter else None
+                    resp = build_j1939_response(j1939, parsed['data'],
+                                                reg.to_dict() if reg else {})
+                    if resp:
+                        self.send_bytes(resp)
+            else:
+                self._enqueue(MonitorEntry(direction='can',
+                    raw_hex=frame_bytes.decode('ascii', errors='replace'),
+                    decoded=f'CAN std ID=0x{parsed["can_id"]:03X} DATA: {parsed["data"].hex(" ").upper()}',
+                ))
+
+    def _parse_lawicel_frame(self, frame: bytes) -> Optional[dict]:
+        """Parse a LAWICEL/slcan CAN frame from ASCII bytes."""
+        try:
+            s = frame.decode('ascii').strip()
+            if not s:
+                return None
+            if s[0].upper() == 'T' and len(s) >= 10:
+                # Extended 29-bit frame: T<8hex><1dlc><data>
+                can_id = int(s[1:9], 16)
+                dlc    = int(s[9], 16)
+                data   = bytes.fromhex(s[10:10 + dlc * 2]) if len(s) >= 10 + dlc * 2 else b''
+                return {'extended': True, 'can_id': can_id, 'dlc': dlc, 'data': data}
+            elif s[0].lower() == 't' and len(s) >= 5:
+                # Standard 11-bit frame: t<3hex><1dlc><data>
+                can_id = int(s[1:4], 16)
+                dlc    = int(s[4], 16)
+                data   = bytes.fromhex(s[5:5 + dlc * 2]) if len(s) >= 5 + dlc * 2 else b''
+                return {'extended': False, 'can_id': can_id, 'dlc': dlc, 'data': data}
+            return None
+        except Exception:
+            return None
+
+    # ── Poll frame builder ────────────────────────────────────────────────────
+
+    def _build_poll_frame(self) -> Optional[bytes]:
+        proto = self._detected_protocol
+        reg   = self._register_getter() if self._register_getter else None
+        state = reg.to_dict() if reg else {}
+
+        if 'VT100' in proto:
+            # For VT100: send a Ctrl-D keystroke to request the next screen
+            # item — this keeps the connection alive and updates our view
+            # of the register's current state
+            return VT100_CTRL_D
+
+        elif 'LAWICEL' in proto or 'CAN' in proto:
+            # Build a J1939 "request" frame to ask the LCR.iQ for its status.
+            # PGN 0xEA00 (59904) is the standard J1939 "Request" PGN.
+            # We request PGN 0xFEF1 (engine fuel delivery).
+            return build_j1939_request(
+                pgn=0xFEF1,
+                src_addr=0xF9,  # our address (off-board diagnostic tool)
+                dst_addr=0xFF,  # global broadcast
+            )
+        else:
+            # Unknown: send a simple ENQ byte
+            return bytes([0x05])
+
+    # ── Monitor queue ─────────────────────────────────────────────────────────
 
     def _enqueue(self, entry: MonitorEntry):
         try:
             self.monitor_queue.put_nowait(entry)
         except queue.Full:
-            # Drop oldest entry to make room
             try:
                 self.monitor_queue.get_nowait()
                 self.monitor_queue.put_nowait(entry)
             except Exception:
                 pass
 
-    # ─────────────────────────── state snapshot ─────────────────────────── #
-
-    def to_dict(self) -> dict:
-        return {
-            "running": self._running,
-            "pyserial_available": self._pyserial_available,
-            "config": {
-                "port": self.config.port,
-                "baud": self.config.baud,
-                "parity": self.config.parity,
-                "mode": self.config.mode,
-                "lcp_node_address": self.config.lcp_node_address,
-            },
-            "available_ports": self.list_ports(),
-            "monitor_pending": self.monitor_queue.qsize(),
-            "protocol_stub": FRAME_SOF is None,
-        }
-
     def drain_monitor(self) -> list[dict]:
-        entries = []
+        out = []
         while True:
             try:
                 e = self.monitor_queue.get_nowait()
-                entries.append({
-                    "ts": e.ts, "direction": e.direction,
-                    "raw_hex": e.raw_hex, "decoded": e.decoded,
-                    "is_addressed_to_us": e.is_addressed_to_us,
+                out.append({
+                    'ts': e.ts, 'direction': e.direction,
+                    'raw_hex': e.raw_hex, 'decoded': e.decoded,
+                    'is_addressed_to_us': e.is_addressed_to_us,
+                    'byte_count': e.byte_count,
                 })
             except queue.Empty:
                 break
-        return entries
+        return out
+
+    def to_dict(self) -> dict:
+        return {
+            'running':             self._running,
+            'pyserial_ok':         self._pyserial_ok,
+            'detect_status':       self._detect_status,
+            'connected_port':      self._connected_port,
+            'connected_baud':      self._connected_baud,
+            'detected_protocol':   self._detected_protocol,
+            'config': {
+                'port':              self.config.port,
+                'baud':              self.config.baud,
+                'mode':              self.config.mode,
+                'lcp_node_address':  self.config.lcp_node_address,
+                'poll_interval_ms':  self.config.poll_interval_ms,
+                'auto_detect':       self.config.auto_detect,
+                'product_key':       self.config.product_key,
+            },
+            'available_ports':     self.list_ports(),
+            'monitor_pending':     self.monitor_queue.qsize(),
+            'rx_total_bytes':      self._rx_total,
+            'tx_total_bytes':      self._tx_total,
+            'last_rx_ts':          self._last_rx_ts,
+        }
 
 
-# ─────────────────────────────────────────────────────────────────────────── #
-#  Protocol stub functions — fill these in when the LCP Host Interface        #
-#  Document is available. Everything else in this file will work immediately. #
-# ─────────────────────────────────────────────────────────────────────────── #
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SAE J1939 / CAN helpers
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def parse_frame(raw: bytes) -> Optional[dict]:
+def decode_j1939_id(can_id_29bit: int) -> dict:
+    """Decode a 29-bit extended CAN ID into J1939 fields."""
+    priority   = (can_id_29bit >> 26) & 0x07
+    reserved   = (can_id_29bit >> 25) & 0x01
+    data_page  = (can_id_29bit >> 24) & 0x01
+    pf         = (can_id_29bit >> 16) & 0xFF   # PDU Format
+    ps         = (can_id_29bit >>  8) & 0xFF   # PDU Specific
+    src_addr   = (can_id_29bit >>  0) & 0xFF   # Source Address
+    # PGN calculation: if PF >= 240 (peer-to-peer PDU2), PS is destination addr
+    if pf >= 240:
+        pgn = (data_page << 17) | (pf << 9) | (ps << 1)
+    else:
+        pgn = (data_page << 17) | (pf << 9)
+    return {
+        'priority':  priority,
+        'pgn':       pgn >> 1,  # normalized
+        'pf':        pf,
+        'ps':        ps,
+        'src_addr':  src_addr,
+        'reserved':  reserved,
+        'data_page': data_page,
+    }
+
+
+def build_j1939_request(pgn: int, src_addr: int = 0xF9, dst_addr: int = 0xFF) -> bytes:
     """
-    Parse a raw LCP frame into a dict with at least:
-        {"command_id": int, "node_address": int, "payload": bytes}
-    Return None if the frame is invalid (bad checksum, unknown structure, etc.)
-
-    STUB — returns None until you fill in the real framing format.
+    Build a LAWICEL-format J1939 Request PGN frame (PGN 0xEA00).
+    This asks the device to respond with the requested PGN's data.
     """
-    return None
+    # J1939 Request PGN = 0xEA00, destination in PS field
+    pf = 0xEA
+    ps = dst_addr
+    can_id = (6 << 26) | (pf << 16) | (ps << 8) | src_addr  # priority=6
+    data = struct.pack('<BH', pgn & 0xFF, pgn >> 8)  # 3 bytes: PGN LSB first
+    data = data[:3]  # exactly 3 bytes
+    frame = f'T{can_id:08X}{len(data):01X}{data.hex().upper()}\r'
+    return frame.encode('ascii')
 
 
-def build_response(parsed_cmd: dict, register_state: dict) -> bytes:
+def build_j1939_response(j1939: dict, request_data: bytes,
+                          register_state: dict) -> Optional[bytes]:
     """
-    Build the response bytes the real LCR meter would send for the given
-    parsed command, given the current register state.
+    Build a LAWICEL-format J1939 response frame.
+    This is where the simulator responds to PandaBox's CAN queries
+    with real meter data from the register state.
 
-    register_state is the full to_dict() output from RegisterBase (or its
-    subclass), giving you access to all simulated meter values: delivery total,
-    k-factor, flow rate, errors, etc.
+    Currently implemented:
+      PGN 0xEA00 (Request) → respond with the requested PGN's data
+      PGN 0xFEF1 (Engine Fuel Delivery Pressure) → delivery total as pressure
+      Unknown PGNs → no response (let PandaBox time out, as a real LCR would)
 
-    STUB — returns empty bytes until you fill in the real response format.
-    Known data type widths (from the manual's LCP data type table, which IS
-    documented) are available in LCP_TYPE_WIDTHS above for reference when you
-    do fill this in.
+    Extend this function with the real PGN mappings once you confirm which
+    PGNs PandaBox uses to talk to the LCR meter.
     """
-    return b""
+    pgn       = j1939['pgn']
+    src_addr  = 0x28   # LCR.iQ source address (arbitrary, non-conflicting)
+    dst_addr  = j1939['src_addr']   # respond to whoever asked
+
+    # Request PGN (0xEA00) — PandaBox asking "give me PGN X"
+    if pgn == 0xEA00:
+        if len(request_data) >= 3:
+            requested_pgn = request_data[0] | (request_data[1] << 8)
+            # Recursively build the response for the requested PGN
+            return build_j1939_response(
+                {'pgn': requested_pgn, 'src_addr': j1939['src_addr']},
+                b'',
+                register_state,
+            )
+
+    # Delivery volume — encode the current delivery total
+    elif pgn == 0xFEF1:
+        total = register_state.get('delivery_total_units', 0.0)
+        # Encode as uint16 in 0.1-unit resolution (standard SPN encoding)
+        encoded = min(int(total * 10), 0xFFFE)  # 0xFFFF = not available
+        data    = struct.pack('<H', encoded) + bytes([0xFF] * 6)
+        return _build_lawicel_response(pgn, src_addr, dst_addr, data)
+
+    # Add more PGN handlers here as you discover which ones PandaBox uses:
+    # elif pgn == 0xXXXX:
+    #     ...
+
+    return None   # no response for unknown PGNs
+
+
+def _build_lawicel_response(pgn: int, src: int, dst: int, data: bytes) -> bytes:
+    """Build a LAWICEL extended CAN frame for the given PGN and data."""
+    pf     = (pgn >> 9) & 0xFF
+    ps     = dst if pf < 240 else (pgn >> 1) & 0xFF
+    can_id = (6 << 26) | (pf << 16) | (ps << 8) | src
+    dlc    = min(len(data), 8)
+    frame  = f'T{can_id:08X}{dlc:01X}{data[:dlc].hex().upper()}\r'
+    return frame.encode('ascii')

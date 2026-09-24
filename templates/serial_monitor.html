@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+{% block title %}Serial Monitor — LCR Simulator{% endblock %}
+{% block content %}
+<style>
+/* ── Layout ────────────────────────────────────────────────────── */
+.sm-page { display:flex; flex-direction:column; height:100%; gap:10px; }
+
+/* ── Status banner ─────────────────────────────────────────────── */
+.sm-banner {
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  background:var(--ui-panel); border:1px solid var(--ui-border);
+  border-radius:10px; padding:12px 16px; flex-shrink:0;
+}
+.sm-pill {
+  font-family:var(--font-mono); font-size:11.5px;
+  display:flex; gap:5px; align-items:center;
+}
+.sm-pill .lbl { color:var(--ui-text-dim); }
+.sm-pill .val { font-weight:700; color:var(--ui-text-bright); }
+.sm-pill .val.rx  { color:#5bc4f5; }
+.sm-pill .val.tx  { color:#f5a623; }
+.sm-pill .val.ok  { color:#6fcf6f; }
+.sm-pill .val.err { color:#f56565; }
+.sm-pill .val.scan { color:#e2c96a; }
+.blink { animation: blink 1s step-end infinite; }
+@keyframes blink { 50%{opacity:0;} }
+
+/* ── Controls ──────────────────────────────────────────────────── */
+.sm-controls {
+  display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  background:var(--ui-panel); border:1px solid var(--ui-border);
+  border-radius:10px; padding:10px 14px; flex-shrink:0;
+}
+.sm-controls label { font-size:11px; color:var(--ui-text-dim); margin-right:4px; }
+.sm-field { display:flex; align-items:center; gap:6px; }
+.sm-field select, .sm-field input[type=number] {
+  font-size:12px; padding:4px 8px;
+  border:1px solid var(--ui-border);
+  border-radius:5px; background:var(--ui-bg); color:var(--ui-text-bright);
+}
+
+/* ── Traffic window ─────────────────────────────────────────────── */
+.sm-log-wrap {
+  flex:1 1 auto; min-height:0;
+  display:flex; flex-direction:column;
+  background:#07090c;
+  border:1px solid var(--ui-border);
+  border-radius:10px; overflow:hidden;
+}
+.sm-log-hdr {
+  display:grid;
+  grid-template-columns:90px 46px 90px 1fr 1fr;
+  font-size:10px; font-family:var(--font-mono);
+  color:var(--ui-text-dim); background:#0d0f14;
+  padding:5px 10px; border-bottom:1px solid #1a1e28; flex-shrink:0;
+}
+#smLog {
+  flex:1; overflow-y:auto; padding:4px 2px;
+  font-family:var(--font-mono); font-size:12px;
+}
+#smLog::-webkit-scrollbar { width:8px; }
+#smLog::-webkit-scrollbar-thumb { background:#1e2530; border-radius:4px; }
+
+.sm-row {
+  display:grid;
+  grid-template-columns:90px 46px 90px 1fr 1fr;
+  padding:2px 8px; border-radius:3px; line-height:1.7;
+}
+.sm-row:hover { background:rgba(255,255,255,0.025); }
+.sm-row.rx   { border-left:3px solid #5bc4f5; }
+.sm-row.tx   { border-left:3px solid #f5a623; }
+.sm-row.info { border-left:3px solid #6fcf6f; background:rgba(111,207,111,0.03); }
+.sm-row.probe{ border-left:3px solid #e2c96a; background:rgba(226,201,106,0.03); }
+.sm-row.can { border-left:3px solid #c084fc; background:rgba(192,132,252,0.03); }
+.sm-dir.can { color:#c084fc; }
+.sm-ts    { color:#2e3540; font-size:10px; }
+.sm-dir   { font-weight:700; font-size:11px; }
+.sm-dir.rx    { color:#5bc4f5; }
+.sm-dir.tx    { color:#f5a623; }
+.sm-dir.info  { color:#6fcf6f; }
+.sm-dir.probe { color:#e2c96a; }
+.sm-dir.error { color:#f56565; }
+.sm-cnt   { color:#2e3540; font-size:10px; }
+.sm-hex   { color:#8a9ab8; word-break:break-all; letter-spacing:0.03em; padding-right:8px; }
+.sm-asc   { color:#485060; word-break:break-all; }
+
+.sm-empty {
+  color:var(--ui-text-dim); font-size:13px;
+  padding:30px 20px; text-align:center; line-height:2.2;
+}
+
+/* ── Send row ───────────────────────────────────────────────────── */
+.sm-send {
+  display:flex; gap:8px; align-items:center;
+  background:var(--ui-panel); border:1px solid var(--ui-border);
+  border-radius:8px; padding:8px 12px; flex-shrink:0;
+}
+.sm-send input {
+  flex:1; font-family:var(--font-mono); font-size:12.5px;
+  background:var(--ui-bg); border:1px solid var(--ui-border);
+  color:var(--ui-text-bright); padding:6px 10px; border-radius:5px;
+}
+.sm-send input::placeholder { color:var(--ui-text-dim); }
+
+/* ── Scanning animation ─────────────────────────────────────────── */
+#scanBar {
+  display:none; font-size:11px; font-family:var(--font-mono);
+  color:#e2c96a; padding:4px 0;
+}
+</style>
+
+<div class="sm-page">
+
+  <!-- Status banner -->
+  <div class="sm-banner">
+    <div class="sm-pill">
+      <span class="lbl">Status</span>
+      <span class="val" id="sbStatus" style="color:#f56565;">DISCONNECTED</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">Port</span>
+      <span class="val" id="sbPort">—</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">Baud</span>
+      <span class="val" id="sbBaud">—</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">Protocol</span>
+      <span class="val" id="sbProto" style="color:#e2c96a;">—</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">RX</span>
+      <span class="val rx" id="sbRx">0 B</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">TX</span>
+      <span class="val tx" id="sbTx">0 B</span>
+    </div>
+    <div class="sm-pill">
+      <span class="lbl">Last RX</span>
+      <span class="val" id="sbLastRx">—</span>
+    </div>
+    <div id="scanBar"><span class="blink">▶</span> <span id="scanMsg">Scanning…</span></div>
+    <div style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+      <label style="font-size:11px; color:var(--ui-text-dim);">
+        <input type="checkbox" id="chkAutoScroll" checked> Auto-scroll
+      </label>
+      <button class="btn" id="btnClear" style="padding:3px 10px; font-size:11px;">Clear</button>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="sm-controls">
+    <!-- Auto-detect (default) or manual -->
+    <div class="sm-field">
+      <label>
+        <input type="checkbox" id="chkAutoDetect" checked>
+        Auto-detect port &amp; baud
+      </label>
+    </div>
+    <div id="manualFields" style="display:none; gap:10px; display:none;" class="sm-field">
+      <label>Port</label>
+      <select id="selPort" style="min-width:160px;"><option value="">— select —</option></select>
+      <label>Baud</label>
+      <select id="selBaud">
+        <option value="115200" selected>115200</option>
+        <option value="57600">57600</option>
+        <option value="38400">38400</option>
+        <option value="19200">19200</option>
+        <option value="9600">9600</option>
+      </select>
+    </div>
+    <div class="sm-field">
+      <label>Mode</label>
+      <select id="selMode">
+        <option value="PASSIVE_MONITOR">Passive Monitor</option>
+        <option value="ACT_AS_METER">Act as Meter</option>
+      </select>
+    </div>
+    <div class="sm-field">
+      <label>Poll every</label>
+      <input type="number" id="inpPoll" value="500" min="100" max="5000" step="100"
+             style="width:70px;"> <span style="font-size:11px; color:var(--ui-text-dim);">ms</span>
+    </div>
+    <button class="btn primary" id="btnConnect">Connect</button>
+    <button class="btn danger"  id="btnDisconnect" disabled>Disconnect</button>
+  </div>
+
+  <!-- Traffic window -->
+  <div class="sm-log-wrap">
+    <div class="sm-log-hdr">
+      <span>Time</span><span>Dir</span><span>Bytes</span>
+      <span>Hex</span><span>ASCII / decoded</span>
+    </div>
+    <div id="smLog">
+      <div class="sm-empty" id="smEmpty">
+        Waiting for connection…<br>
+        <strong>Click Connect — port and baud are detected automatically.</strong><br><br>
+        <span style="color:#e2c96a;">
+        LCR-II / LCR-600 (RS-232 via J3):<br>
+        &nbsp;&nbsp;9600 baud 8N1 no flow control<br>
+        &nbsp;&nbsp;J3 pin48(TXD/orange) → USB-RS232 RX<br>
+        &nbsp;&nbsp;J3 pin49(RXD/gray) → USB-RS232 TX<br>
+        &nbsp;&nbsp;J3 pin51(GND/white) → GND<br>
+        &nbsp;&nbsp;Jumper J10 on CPU board must be in RS-232 position<br>
+        <br>
+        LCR.iQ (CAN via J8 — CAN-to-RS232 bridge):<br>
+        &nbsp;&nbsp;J8 pin46 = CAN-H → bridge CAN-H<br>
+        &nbsp;&nbsp;J8 pin45 = CAN-L → bridge CAN-L<br>
+        &nbsp;&nbsp;J8 pin43 = EARTH/Shield → bridge shield/GND<br>
+        &nbsp;&nbsp;Bridge serial side → your USB-RS232 converter<br>
+        &nbsp;&nbsp;SAE J1939 @ 250 kbps CAN, 115200 baud serial side
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Send row -->
+  <div class="sm-send">
+    <input id="inpSend" type="text"
+           placeholder="Send hex to PandaBox:  01 02 FF A0   or text:  ENQ">
+    <button class="btn" id="btnSendHex">Send Hex</button>
+    <button class="btn" id="btnSendText">Send Text</button>
+    <button class="btn" id="btnSendEnq" title="Send ENQ byte (0x05) — standard device poll">Send ENQ</button>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// ─── State ─────────────────────────────────────────────────────────────────
+let _poll = null;
+let _running = false;
+
+// ─── DOM shortcuts ──────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const log = $("smLog");
+
+// ─── Refresh port list ──────────────────────────────────────────────────────
+async function refreshPorts() {
+  const r = await fetch("/api/serial/status");
+  const d = await r.json();
+  const sel = $("selPort");
+  const prev = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  (d.serial.available_ports || []).forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.device;
+    const ftdi = p.is_ftdi ? " ★ FTDI" : "";
+    opt.textContent = `${p.device}  —  ${p.description}${ftdi}`;
+    if (p.device === prev) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  updateBanner(d.serial);
+}
+
+// ─── Banner update ──────────────────────────────────────────────────────────
+function fmtBytes(n) {
+  if (n < 1024) return n + " B";
+  return (n / 1024).toFixed(1) + " KB";
+}
+function updateBanner(s) {
+  const status = s.running ? "CONNECTED"
+                : s.detect_status === "scanning" ? "SCANNING…"
+                : s.detect_status === "failed"   ? "DETECT FAILED"
+                : "DISCONNECTED";
+  const col = s.running ? "#6fcf6f"
+            : s.detect_status === "scanning" ? "#e2c96a"
+            : "#f56565";
+  $("sbStatus").textContent = status;
+  $("sbStatus").style.color = col;
+  $("sbPort").textContent   = s.connected_port || s.config.port || "—";
+  $("sbBaud").textContent   = s.connected_baud || (s.running ? s.config.baud : "—");
+  $("sbProto").textContent  = s.detected_protocol && s.detected_protocol !== 'unknown'
+                              ? s.detected_protocol.split(' ')[0] : "—";
+  $("sbRx").textContent     = fmtBytes(s.rx_total_bytes || 0);
+  $("sbTx").textContent     = fmtBytes(s.tx_total_bytes || 0);
+  if (s.last_rx_ts) {
+    $("sbLastRx").textContent = new Date(s.last_rx_ts * 1000).toLocaleTimeString();
+  }
+  const scanning = s.detect_status === "scanning";
+  $("scanBar").style.display = scanning ? "flex" : "none";
+  $("btnConnect").disabled    = s.running || scanning;
+  $("btnDisconnect").disabled = !s.running && !scanning;
+  _running = s.running;
+}
+
+// ─── Append a row to the traffic log ───────────────────────────────────────
+function appendRow(e) {
+  const empty = $("smEmpty");
+  if (empty) empty.remove();
+
+  while (log.children.length >= 3000) log.removeChild(log.firstChild);
+
+  const d   = new Date(e.ts * 1000);
+  const ts  = d.toTimeString().slice(0,8) + "." + String(d.getMilliseconds()).padStart(3,"0");
+  const cnt = e.byte_count ? `+${e.byte_count}` : "";
+  const dirLabel = { rx:"← RX", tx:"→ TX", info:"INFO", probe:"SCAN", error:"ERR", can:"CAN" }[e.direction] || e.direction;
+
+  const row = document.createElement("div");
+  row.className = `sm-row ${e.direction}`;
+  row.innerHTML =
+    `<span class="sm-ts">${ts}</span>` +
+    `<span class="sm-dir ${e.direction}">${dirLabel}</span>` +
+    `<span class="sm-cnt">${cnt}</span>` +
+    `<span class="sm-hex">${escHtml(e.raw_hex)}</span>` +
+    `<span class="sm-asc">${escHtml(e.decoded || "")}</span>`;
+  log.appendChild(row);
+
+  if ($("chkAutoScroll").checked) log.scrollTop = log.scrollHeight;
+}
+function escHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// ─── Poll the monitor endpoint ──────────────────────────────────────────────
+async function pollMonitor() {
+  try {
+    const r = await fetch("/api/serial/monitor");
+    const d = await r.json();
+    updateBanner(d.serial);
+    d.entries.forEach(appendRow);
+    if (d.serial.detect_status === "scanning") {
+      $("scanMsg").textContent = "Auto-detecting port and baud rate…";
+    }
+  } catch (_) {}
+}
+
+function startPoll() { if (!_poll) _poll = setInterval(pollMonitor, 200); }
+function stopPoll()  { if (_poll) { clearInterval(_poll); _poll = null; } }
+
+// ─── Connect / disconnect ───────────────────────────────────────────────────
+async function doConnect() {
+  const autoDetect = $("chkAutoDetect").checked;
+  const cfg = {
+    auto_detect:      autoDetect,
+    mode:             $("selMode").value,
+    poll_interval_ms: parseInt($("inpPoll").value) || 500,
+  };
+  if (!autoDetect) {
+    const port = $("selPort").value;
+    if (!port) { alert("Select a port or enable Auto-detect."); return; }
+    cfg.port = port;
+    cfg.baud = parseInt($("selBaud").value);
+  }
+  await fetch("/api/serial/config", { method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) });
+  const r = await fetch("/api/serial/start", { method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ product_key: "lcriq" }) });
+  const d = await r.json();
+  if (!d.ok) { alert("Error: " + d.error); return; }
+  startPoll();
+  updateBanner(d.serial);
+}
+async function doDisconnect() {
+  await fetch("/api/serial/stop", { method:"POST" });
+  stopPoll();
+  const d = await (await fetch("/api/serial/status")).json();
+  updateBanner(d.serial);
+}
+
+// ─── Send helpers ───────────────────────────────────────────────────────────
+async function sendHex(hex) {
+  await fetch("/api/serial/send", { method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify({ hex }) });
+}
+async function sendText(text) {
+  const hex = Array.from(new TextEncoder().encode(text))
+    .map(b => b.toString(16).padStart(2,"0")).join(" ");
+  await sendHex(hex);
+}
+
+// ─── Init ───────────────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", async () => {
+  await refreshPorts();
+
+  $("chkAutoDetect").addEventListener("change", e => {
+    $("manualFields").style.display = e.target.checked ? "none" : "flex";
+  });
+  $("btnConnect").addEventListener("click", doConnect);
+  $("btnDisconnect").addEventListener("click", doDisconnect);
+  $("btnClear").addEventListener("click", () => {
+    log.innerHTML = '<div class="sm-empty" id="smEmpty">Log cleared.</div>';
+  });
+  $("btnSendHex").addEventListener("click", () => sendHex($("inpSend").value));
+  $("btnSendText").addEventListener("click", () => sendText($("inpSend").value));
+  $("btnSendEnq").addEventListener("click", () => sendHex("05"));
+  $("inpSend").addEventListener("keydown", e => {
+    if (e.key === "Enter") sendHex($("inpSend").value);
+  });
+
+  // Refresh port list every 4 s (in case converter is plugged in later)
+  setInterval(refreshPorts, 4000);
+
+  // If bridge is already running (started elsewhere), begin polling
+  const s = await (await fetch("/api/serial/status")).json();
+  updateBanner(s.serial);
+  if (s.serial.running || s.serial.detect_status === "scanning") startPoll();
+});
+</script>
+{% endblock %}
