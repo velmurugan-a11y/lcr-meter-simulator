@@ -159,12 +159,7 @@ function populatePrinterDropdown(state) {
   });
 }
 
-function maybeShowPrinterPopup(state) {
-  if (!state.last_ticket || !state.printed_ticket_text) return;
-  const ts = state.last_ticket.timestamp;
-  if (ts === _lastShownTicketTimestamp) return; // already shown this exact ticket
-  _lastShownTicketTimestamp = ts;
-
+function _renderTicketIntoPopup(state) {
   populatePrinterDropdown(state);
   const sel = document.getElementById("printerModelSelect");
   if (sel) sel.value = state.selected_printer;
@@ -173,6 +168,29 @@ function maybeShowPrinterPopup(state) {
   const container = document.getElementById("ticketPaperContainer");
   container.innerHTML = `<div class="ov-ticket-paper ${formFactor}">${escapeHtml(state.printed_ticket_text)}</div>`;
   document.getElementById("printerPopupBackdrop").classList.add("open");
+}
+
+/** Auto-trigger: only pops up once per genuinely NEW ticket (a fresh
+    delivery/shift/diagnostic just completed). Called every poll; the
+    timestamp dedup is what stops it re-opening on every single poll tick
+    for the same still-current ticket. */
+function maybeShowPrinterPopup(state) {
+  if (!state.last_ticket || !state.printed_ticket_text) return;
+  const ts = state.last_ticket.timestamp;
+  if (ts === _lastShownTicketTimestamp) return; // already shown this exact ticket
+  _lastShownTicketTimestamp = ts;
+  _renderTicketIntoPopup(state);
+}
+
+/** Explicit trigger: for an operator-initiated "reprint" action, where the
+    ticket's timestamp is deliberately unchanged (it's the SAME ticket being
+    reprinted, not a new one) -- so the auto-trigger's dedup must not apply
+    here, or pressing "Print Last Ticket" a second time would silently do
+    nothing, which is not what the real register does (it reliably reprints
+    on every press per the manual's section 1.12.10.10). */
+function forceShowPrinterPopup(state) {
+  if (!state.last_ticket || !state.printed_ticket_text) return;
+  _renderTicketIntoPopup(state);
 }
 
 function escapeHtml(s) {
@@ -192,4 +210,124 @@ function wireViewToggle(productKey, onModeChange) {
   origBtn.addEventListener("click", () => setMode("original"));
   custBtn.addEventListener("click", () => setMode("custom"));
   return setMode;
+}
+
+/**
+ * buildPulserWidget(containerEl, productKey)
+ * 
+ * Builds the Internal Pulser (PN 82597) animation widget and appends it to
+ * containerEl. The shaft rotates continuously while flowing, stops while
+ * stalled/idle. Rotation SPEED is tied to real pulser flow rate: faster
+ * flow = faster rotation, directly visible just like the real encoder shaft
+ * spinning faster as liquid flows faster through the meter.
+ *
+ * +/- buttons nudge the flow rate in 20-unit steps (a practical increment
+ * that's meaningful at typical truck-delivery flow rates of 50-300 units/min).
+ * Start/Stop toggle the pulser mode between flowing and idle.
+ *
+ * The relationship between flow rate and animation period:
+ *   At 60 units/min with k=100 pulses/unit → 6000 pulses/min → 100 Hz
+ *   One visible shaft revolution per second at "nominal" is a natural
+ *   reference point (matches the real encoder spinning ~100 times/second
+ *   producing quadrature pulses from a 4-slot disc, so 100 full rev/sec
+ *   is realistic but much too fast to see, hence we scale down: one visible
+ *   revolution takes 0.5s at 300 u/min, 1s at 150, and 3s at 50 u/min,
+ *   making the speed difference clearly visible while still looking fast
+ *   at typical delivery flow rates rather than glacially slow).
+ */
+function buildPulserWidget(containerEl, productKey) {
+  const wrap = document.createElement("div");
+  wrap.className = "ov-pulser-widget";
+  wrap.id = "ovPulserWidget_" + productKey;
+  wrap.innerHTML = `
+    <div class="ov-pulser-header">Internal Pulser (PN 82597)</div>
+    <div class="ov-pulser-body">
+      <div class="ov-pulser-assembly">
+        <div class="ov-pulser-body-rect"></div>
+        <div class="ov-pulser-collar"></div>
+        <div class="ov-pulser-disc" id="ovPulserDisc_${productKey}"></div>
+        <div class="ov-pulser-shaft" id="ovPulserShaft_${productKey}">
+          <div class="ov-pulser-index"></div>
+        </div>
+      </div>
+      <div class="ov-pulser-controls">
+        <div class="ov-pulser-rate" id="ovPulserRate_${productKey}">
+          <span id="ovPulserRateNum_${productKey}">0.0</span><span class="unit"> u/min</span>
+        </div>
+        <div class="ov-pulser-btns">
+          <button class="ov-pulser-btn" data-action="dec" title="Decrease flow rate">−</button>
+          <button class="ov-pulser-btn stop" data-action="stop" title="Stop (pulser idle)">&#9646;</button>
+          <button class="ov-pulser-btn run" data-action="start" title="Start (pulser flowing)">&#9654;</button>
+          <button class="ov-pulser-btn" data-action="inc" title="Increase flow rate">+</button>
+        </div>
+        <div class="ov-pulser-label">Shaft speed ∝ real flow rate</div>
+        <div class="ov-pulser-fault" id="ovPulserFault_${productKey}"></div>
+      </div>
+    </div>`;
+
+  wrap.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const state = window._lastState;
+    const currentRate = state ? state.pulser.flow_rate_units_per_min : 60;
+    if (action === "dec") {
+      const newRate = Math.max(0, currentRate - 20);
+      apiPost(`/api/${productKey}/pulser`, { flow_rate: newRate });
+    } else if (action === "inc") {
+      apiPost(`/api/${productKey}/pulser`, { flow_rate: currentRate + 20 });
+    } else if (action === "stop") {
+      apiPost(`/api/${productKey}/pulser`, { mode: "idle" });
+    } else if (action === "start") {
+      apiPost(`/api/${productKey}/pulser`, { mode: "flowing" });
+    }
+  });
+  containerEl.appendChild(wrap);
+}
+
+/**
+ * updatePulserWidget(state, productKey)
+ * 
+ * Called every poll from each product's onState(). Updates the rotation
+ * animation speed, the displayed flow rate, and the fault indicator.
+ */
+function updatePulserWidget(state, productKey) {
+  const shaft = document.getElementById(`ovPulserShaft_${productKey}`);
+  const disc = document.getElementById(`ovPulserDisc_${productKey}`);
+  const rateNum = document.getElementById(`ovPulserRateNum_${productKey}`);
+  const fault = document.getElementById(`ovPulserFault_${productKey}`);
+  if (!shaft || !disc) return;
+
+  const mode = state.pulser.mode;
+  const rate = state.pulser.flow_rate_units_per_min;
+
+  // Animation period: 150 / max(rate, 1) seconds per revolution, clamped
+  // to [0.15s, 4s] so it's always visibly different from stopped but never
+  // so fast it looks like a solid blur at the top of the realistic range.
+  const period = mode === "flowing" || mode === "vibration"
+    ? Math.min(4.0, Math.max(0.15, 150 / Math.max(rate, 1)))
+    : null;
+
+  // Apply rotation: running sets a CSS variable + the .spinning class;
+  // idle/stalled remove it so the element freezes in whatever position the
+  // animation happened to stop at (matching the real shaft which also stops
+  // wherever it is, not snapping to a "zero" position).
+  shaft.style.setProperty("--ov-pulser-period", period ? `${period}s` : "1s");
+  disc.style.setProperty("--ov-pulser-period", period ? `${period}s` : "1s");
+  shaft.classList.toggle("spinning", !!period);
+  disc.classList.toggle("spinning", !!period);
+  shaft.classList.toggle("stalled", mode === "stalled");
+
+  rateNum.textContent = rate.toFixed(1);
+
+  // The fault display mirrors the J8 diagnostic table from the skill:
+  // stalled = non-zero 1-3V on #33/#34, which is the "shaft locked" fault;
+  // idle = legitimate no-flow state, not a fault.
+  if (mode === "stalled") {
+    fault.textContent = "STALLED — J8 FAULT";
+  } else if (mode === "vibration") {
+    fault.textContent = "VIBRATION / JITTER";
+  } else {
+    fault.textContent = "";
+  }
 }

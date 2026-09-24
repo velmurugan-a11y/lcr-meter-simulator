@@ -248,5 +248,46 @@ r10.stop_delivery_button()
 check("under realistic polling, a ticket is produced on stop", r10.last_ticket is not None)
 
 print()
+print("=== LCR.iQ: Main Menu screen + Weight Preset + Reprint (point 3 bug fixes) ===")
+r11 = LCRiQRegister()
+check("MAIN_MENU is a valid navigable screen", "MAIN_MENU" in r11.SCREENS)
+check("SETUP_MENU_HUB is a valid navigable screen", "SETUP_MENU_HUB" in r11.SCREENS)
+r11.navigate("MAIN_MENU")
+check("navigating to MAIN_MENU actually changes screen state", r11.screen == "MAIN_MENU")
+r11.navigate("SETUP_MENU_HUB")
+check("navigating to SETUP_MENU_HUB actually changes screen state", r11.screen == "SETUP_MENU_HUB")
+
+r11.set_weight_preset(150.5)
+check("weight preset accepts a valid value", r11.weight_preset == 150.5)
+try:
+    r11.set_weight_preset(-5)
+    check("negative weight preset should be rejected", False)
+except RegisterError:
+    check("negative weight preset rejected with RANGE ERROR", True)
+r11.set_weight_preset(None)
+check("weight preset can be cleared back to None", r11.weight_preset is None)
+
+try:
+    r11.reprint_last_ticket()
+    check("reprint with no prior ticket should raise", False)
+except RegisterError:
+    check("reprint with no prior delivery correctly raises RANGE ERROR (nothing to reprint)", True)
+
+r11.active_product().pulses_per_unit = 100.0
+r11.pulser.set_k_factor(100.0)
+r11.set_commanded_flow_rate(200.0)
+r11.start_delivery_button()
+for _ in range(8):
+    time.sleep(0.25)
+    r11.tick()
+r11.stop_delivery_button()
+check("a real ticket now exists after a completed delivery", r11.last_ticket is not None)
+ticket_before = dict(r11.last_ticket)
+r11.reprint_last_ticket()
+check("reprint after a real ticket exists succeeds without raising", True)
+check("reprint does not fabricate a new/different ticket", r11.last_ticket == ticket_before)
+check("reprint sets delivery_pending_print", r11.delivery_pending_print is True)
+
+print()
 print(f"=== RESULT: {passed} passed, {failed} failed ===")
 sys.exit(1 if failed else 0)

@@ -31,7 +31,18 @@ class Tank:
 class LCRiQRegister(RegisterBase):
     PRODUCT_KEY = "lcriq"
 
-    SCREENS = ["HOME", "DELIVERY", "SETUP_REGISTER", "SETUP_METER", "SETUP_CALIBRATION",
+    # MAIN_MENU added per the product manual's section 1.12.4 "Display
+    # Screen Types": "There are two menus accessible to the user, the Main
+    # Menu and the Setup Menu... Access to the setup menu is available from
+    # the Main Menu only." The manual documents Main Menu's destinations as
+    # Delivery Details, Diagnostics, Setup Menu, and Wireless Connectivity
+    # (the last confirmed verbatim: "Navigate to the Main Menu and select
+    # the Wireless Connectivity option."). SETUP_MENU_HUB is the landing
+    # screen reached by selecting "Setup Menu" from Main Menu, listing the
+    # 9 setup sub-screens (1.12.8.1 through .9) as its own menu, rather
+    # than flattening everything into one list.
+    SCREENS = ["HOME", "DELIVERY", "MAIN_MENU", "SETUP_MENU_HUB",
+               "SETUP_REGISTER", "SETUP_METER", "SETUP_CALIBRATION",
                "SETUP_SECURITY", "SETUP_IO", "WIRELESS", "TANK_INVENTORY", "DIAGNOSTICS"]
 
     BT_STATES = ["OFF", "SCANNING", "PAIRING", "CONNECTED"]
@@ -42,6 +53,12 @@ class LCRiQRegister(RegisterBase):
         self.screen = "HOME"
         self.running = False  # iQ has no rotary switch; RUN/STOP are soft buttons
         self.field_cursor = 0
+        # Per manual section 1.12.6 "Delivery Details": a separate numeric
+        # field from preset_units (which is the GROSS preset already in
+        # RegisterBase) -- this is the WEIGHT preset specifically, paired
+        # with the brochure's "preset by weight" patent-pending feature and
+        # the Slipstream Densitometer accessory documented in the skill.
+        self.weight_preset: float | None = None
 
         # SENSEiQ: 1 onboard 4-20mA input + 6 on the expansion board = 7 total
         self.analog_inputs = [AnalogInput(channel=i + 1) for i in range(7)]
@@ -74,6 +91,28 @@ class LCRiQRegister(RegisterBase):
             raise RegisterError("RANGE ERROR")
         self.screen = screen
         self.field_cursor = 0
+
+    def set_weight_preset(self, value: float | None):
+        """Per manual: 'A numeric text field for the weight preset value--
+        if weight presets are accepted. (Maximum - 7 numeric characters)'"""
+        if value is not None and (value < 0 or value >= 10_000_000):
+            raise RegisterError("RANGE ERROR")
+        self.weight_preset = value
+
+    def reprint_last_ticket(self):
+        """Per manual section 1.12.10.10 'Print the previous ticket': 'From
+        the Idle delivery screen, it is always possible to reprint a copy
+        of the transaction ticket for the previous delivery... Ensure that
+        there is a ticket in place and the Register will issue the reprint
+        command and print the ticket.' If there's no prior ticket, the real
+        unit simply can't reprint one -- modeled here as a RANGE ERROR
+        rather than fabricating ticket content that was never produced."""
+        if self.last_ticket is None:
+            raise RegisterError("RANGE ERROR")
+        self.delivery_pending_print = True
+        # Re-stamping printed_ticket_text happens automatically in
+        # RegisterBase.to_dict() since it always re-renders from
+        # self.last_ticket -- no separate copy to keep in sync here.
 
     def start_delivery_button(self):
         if self.running:
@@ -212,6 +251,7 @@ class LCRiQRegister(RegisterBase):
             "wifi_ssid": self.wifi_ssid,
             "home_screen_profile": self.home_screen_profile,
             "qr_ticket_pending": self.qr_ticket_pending,
+            "weight_preset": self.weight_preset,
             "analog_inputs": [{"channel": a.channel, "label": a.label,
                                 "ma_value": a.ma_value, "use_case": a.use_case,
                                 "pct": round(self.tank_level_from_ma(a.ma_value), 1)}

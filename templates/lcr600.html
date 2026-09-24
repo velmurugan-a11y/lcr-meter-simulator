@@ -41,6 +41,7 @@
             <div class="ov-rotary-hint" style="margin-top:6px;">Drag dial to turn &middot; tap keys to navigate</div>
           </div>
         </div>
+        <div id="ovPulserMount_lcr600"></div>
       </div>
     </div>
 
@@ -307,6 +308,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("disconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr600/environment", { rtd_probe_connected: false }));
   document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr600/environment", { rtd_probe_connected: true }));
 
+  buildPulserWidget(document.getElementById("ovPulserMount_lcr600"), "lcr600");
   startPolling("lcr600", onState);
 });
 
@@ -408,6 +410,7 @@ function onState(state) {
   renderTaxTable(state);
   renderDiagnostics(state);
   renderErrorBanner(state, "lcr600", document.getElementById("errorBanner"));
+  updatePulserWidget(state, "lcr600");
   document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;
   document.getElementById("gaugeK").textContent = fmt(state.active_product.pulses_per_unit, 2);
   document.getElementById("lockHint").textContent = state.locked ? "LOCKED — break the W&M seal to recalibrate" : "k-Factor / VCF";

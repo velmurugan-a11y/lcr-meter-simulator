@@ -15,8 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from meter_core import REGISTER_CLASSES, RegisterError
+from meter_core.serial_bridge import SerialBridge
 
 app = Flask(__name__)
+
+# One serial bridge instance shared across the process — it manages its own
+# background reader thread and exposes state/control via /api/serial/* routes.
+_serial_bridge = SerialBridge()
 
 # One live instance per product, created lazily and kept for the lifetime of
 # the process — this is what makes "switch meter type" not reset the other
@@ -385,6 +390,33 @@ def lcriq_navigate():
         return error_response(e)
 
 
+@app.route("/api/lcriq/reprint_last_ticket", methods=["POST"])
+def lcriq_reprint_last_ticket():
+    try:
+        reg = get_register("lcriq")
+        reg.reprint_last_ticket()
+        return jsonify({"ok": True, "state": reg.to_dict()})
+    except RegisterError as e:
+        return error_response(e)
+    except Exception as e:
+        return error_response(e)
+
+
+@app.route("/api/lcriq/set_weight_preset", methods=["POST"])
+def lcriq_set_weight_preset():
+    """Body: {value: number|null}"""
+    try:
+        reg = get_register("lcriq")
+        body = request.get_json(force=True) or {}
+        val = body.get("value")
+        reg.set_weight_preset(None if val in (None, "", "none") else float(val))
+        return jsonify({"ok": True, "state": reg.to_dict()})
+    except RegisterError as e:
+        return error_response(e)
+    except Exception as e:
+        return error_response(e)
+
+
 @app.route("/api/lcriq/bluetooth", methods=["POST"])
 def lcriq_bluetooth():
     """Body: {action: 'toggle'|'scan'|'connect'|'disconnect', on?, device_name?, is_printer?}"""
@@ -441,6 +473,83 @@ def lcriq_analog_input():
         return jsonify({"ok": True, "state": reg.to_dict()})
     except RegisterError as e:
         return error_response(e)
+    except Exception as e:
+        return error_response(e)
+
+
+
+
+# ─────────────────────────────────────────────────────────────────────────── #
+#  RS-232 / RS-485 → USB Serial Bridge                                        #
+#  Full infrastructure ready; protocol layer stubbed pending the LCP Host     #
+#  Interface Document — see meter_core/serial_bridge.py for details.          #
+# ─────────────────────────────────────────────────────────────────────────── #
+
+@app.route("/api/serial/status", methods=["GET"])
+def serial_status():
+    return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
+
+
+@app.route("/api/serial/config", methods=["POST"])
+def serial_config():
+    """Body: {port?, baud?, mode?, lcp_node_address?}"""
+    try:
+        body = request.get_json(force=True) or {}
+        cfg = _serial_bridge.config
+        if "port" in body:
+            cfg.port = body["port"] or None
+        if "baud" in body:
+            cfg.baud = int(body["baud"])
+        if "mode" in body:
+            from meter_core.serial_bridge import MODE_ACT_AS_METER, MODE_PASSIVE_MONITOR
+            if body["mode"] not in (MODE_ACT_AS_METER, MODE_PASSIVE_MONITOR):
+                return error_response(Exception("Unknown mode"))
+            cfg.mode = body["mode"]
+        if "lcp_node_address" in body:
+            cfg.lcp_node_address = int(body["lcp_node_address"])
+        return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
+    except Exception as e:
+        return error_response(e)
+
+
+@app.route("/api/serial/start", methods=["POST"])
+def serial_start():
+    """Body: {product_key} — which meter's state to serve as the simulated meter."""
+    try:
+        body = request.get_json(force=True) or {}
+        product_key = body.get("product_key", "lcr2")
+
+        def getter():
+            return get_register(product_key)
+
+        result = _serial_bridge.start(getter)
+        result["serial"] = _serial_bridge.to_dict()
+        return jsonify(result)
+    except Exception as e:
+        return error_response(e)
+
+
+@app.route("/api/serial/stop", methods=["POST"])
+def serial_stop():
+    _serial_bridge.stop()
+    return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
+
+
+@app.route("/api/serial/monitor", methods=["GET"])
+def serial_monitor():
+    """Returns queued monitor entries (raw + decoded frames) and drains them."""
+    entries = _serial_bridge.drain_monitor()
+    return jsonify({"ok": True, "entries": entries, "serial": _serial_bridge.to_dict()})
+
+
+@app.route("/api/serial/send", methods=["POST"])
+def serial_send():
+    """Body: {hex: '0A 1B ...'} — send arbitrary hex bytes (for manual testing)."""
+    try:
+        body = request.get_json(force=True) or {}
+        raw = bytes.fromhex(body.get("hex", "").replace(" ", "").replace(":", ""))
+        _serial_bridge.send_bytes(raw)
+        return jsonify({"ok": True})
     except Exception as e:
         return error_response(e)
 

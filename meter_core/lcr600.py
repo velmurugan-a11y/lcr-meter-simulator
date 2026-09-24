@@ -71,9 +71,17 @@ class LCR600Register(RegisterBase):
         # external poller having recently called tick().
         self.tick()
         self.selector = position
-        if position == "RUN" and not self.delivery_active:
-            self.start_delivery()
+        if position == "RUN":
+            # Same pending-print gate as LCR-II per standard LC behavior.
+            if self.delivery_pending_print:
+                self._raise_error("PRINT TICKET FIRST")
+            if not self.delivery_active:
+                self.start_delivery()
         elif position == "STOP" and self.delivery_active:
+            # Per the LCR-600 setup manual: "Stop - closes the control valve
+            # to PAUSE a delivery." STOP in LCR-600 means pause, not finalize.
+            # However the hose-packing rule still applies per the LCR-II
+            # quick reference card which covers the whole family.
             if self.delivery_total_units < 1.0:
                 self.delivery_active = False
                 self.delivery_total_units = 0.0
@@ -81,7 +89,14 @@ class LCR600Register(RegisterBase):
             else:
                 self.stop_delivery()
         elif position == "PRINT":
-            self.delivery_pending_print = False
+            # Per the LCR-600 setup manual: "PRINT - ends a delivery and
+            # prints a delivery ticket." This is the explicit end-and-ticket
+            # trigger, distinct from STOP which only pauses. If a delivery
+            # is still active (operator went RUN→PRINT directly), end it now.
+            if self.delivery_active:
+                self.stop_delivery()
+            if self.delivery_pending_print:
+                self.delivery_pending_print = False
 
     def navigate_screen(self, screen: str):
         if screen not in self.SCREENS:

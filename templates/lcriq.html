@@ -26,9 +26,25 @@
               <span id="ovTopLeft">LC &#128424;</span>
               <span id="ovTopRight"></span>
             </div>
-            <div class="ov-lcriq-statusline" id="ovStatusLine" style="margin-top:4px; color: var(--lcd-digit);">STATUS: IDLE</div>
-            <div class="ov-lcd-digits" id="ovLcdMain">0.0</div>
-            <div style="font-family: var(--font-ui); font-size: 11px; color: var(--lcd-digit); opacity: 0.8; margin-top: -4px;">Gallons</div>
+
+            <!-- HOME / DELIVERY content: the live volume readout -->
+            <div id="ovHomeContent">
+              <div class="ov-lcriq-statusline" id="ovStatusLine" style="margin-top:4px; color: var(--lcd-digit);">STATUS: IDLE</div>
+              <div class="ov-lcd-digits" id="ovLcdMain">0.0</div>
+              <div style="font-family: var(--font-ui); font-size: 11px; color: var(--lcd-digit); opacity: 0.8; margin-top: -4px;">Gallons</div>
+            </div>
+
+            <!-- MENU content: shown instead of the readout on any non-
+                 delivery screen (Main Menu, Setup Menu hub, Wireless,
+                 Diagnostics, etc) -- a selectable list, navigated with the
+                 d-pad up/down and confirmed with OK, exactly per the
+                 manual's documented List Box interaction model
+                 (section 1.12.4: "use the navigation keys to scroll up or
+                 down... Press OK to make a selection"). -->
+            <div id="ovMenuContent" style="display:none;">
+              <div class="ov-lcriq-statusline" id="ovMenuTitle" style="color: var(--lcd-digit);">MAIN MENU</div>
+              <div id="ovMenuList" style="margin-top:6px; font-family: var(--font-ui); font-size: 13px; color: var(--lcd-digit);"></div>
+            </div>
           </div>
         </div>
         <div class="ov-lcriq-softkeys" id="ovSoftkeys"></div>
@@ -43,6 +59,7 @@
             <button class="ov-iq-dpad-ok" id="ovOkBtn">OK</button>
           </div>
         </div>
+        <div id="ovPulserMount_lcriq"></div>
       </div>
     </div>
 
@@ -176,7 +193,35 @@
 {% block extra_scripts %}
 <script>
 window.PRODUCT_KEY = "lcriq";
-const SCREENS = ["HOME", "DELIVERY", "SETUP_REGISTER", "SETUP_METER", "SETUP_CALIBRATION", "SETUP_SECURITY", "SETUP_IO", "WIRELESS", "TANK_INVENTORY", "DIAGNOSTICS"];
+const SCREENS = ["HOME", "DELIVERY", "MAIN_MENU", "SETUP_MENU_HUB", "SETUP_REGISTER", "SETUP_METER",
+  "SETUP_CALIBRATION", "SETUP_SECURITY", "SETUP_IO", "WIRELESS", "TANK_INVENTORY", "DIAGNOSTICS"];
+
+/* Main Menu's own destinations, confirmed against the product manual
+   (section 1.12.4, and the explicit "Navigate to the Main Menu and select
+   the Wireless Connectivity option" instruction elsewhere in the same
+   manual): Delivery Details, Diagnostics, Setup Menu, Wireless
+   Connectivity. Tank Inventory is included too since it's a real,
+   separately-documented screen in this sim's backend (SENSEiQ section)
+   even though the 2019 manual predates that feature. */
+const MAIN_MENU_ITEMS = [
+  { label: "Delivery Details", screen: "DELIVERY" },
+  { label: "Diagnostics", screen: "DIAGNOSTICS" },
+  { label: "Setup Menu", screen: "SETUP_MENU_HUB" },
+  { label: "Wireless Connectivity", screen: "WIRELESS" },
+  { label: "Tank Inventory", screen: "TANK_INVENTORY" },
+];
+/* Setup Menu's own 9 destinations, per manual sections 1.12.8.1-1.12.8.9 --
+   these are the same screens the Custom View's tab bar already exposes;
+   Original View's Setup Menu hub is just a friendlier list-box presentation
+   of the identical set, per the manual's own "Access to the setup menu is
+   available from the Main Menu only" + List Box navigation model. */
+const SETUP_MENU_ITEMS = [
+  { label: "Register Settings", screen: "SETUP_REGISTER" },
+  { label: "Meter Settings", screen: "SETUP_METER" },
+  { label: "Calibration Settings", screen: "SETUP_CALIBRATION" },
+  { label: "Security", screen: "SETUP_SECURITY" },
+  { label: "I/O Setup", screen: "SETUP_IO" },
+];
 
 /* Real LCR.iQ keypad per the brochure photo: 1-9, 0, with multitap letter
    groups identical in spirit to LCR-600's, plus a dedicated symbol key. */
@@ -203,21 +248,129 @@ function buildSoftkeys() {
     row.appendChild(btn);
   }
 }
+
+/* Per-screen softkey label sets. The manual is explicit that "the onscreen
+   action of the function keys will vary on different screens or menus" and
+   that an unused slot is simply left blank ("the onscreen section for that
+   function will be empty") -- modeled here as "" which the renderer below
+   turns into a disabled, unlabeled key, exactly matching that description. */
+const SOFTKEYS_BY_SCREEN = {
+  HOME:           ["Weight Preset", "Main Menu", "Print Last Ticket", "", "Start"],
+  DELIVERY_RUNNING: ["Show Details", "Stop", "", "", "End & Print"],
+  MAIN_MENU:      ["", "", "", "Back", "Select"],
+  SETUP_MENU_HUB: ["", "", "", "Back", "Select"],
+  SETUP_REGISTER: ["", "", "", "Back", ""],
+  SETUP_METER:    ["", "", "", "Back", ""],
+  SETUP_CALIBRATION: ["", "", "", "Back", ""],
+  SETUP_SECURITY: ["", "", "", "Back", ""],
+  SETUP_IO:       ["", "", "", "Back", ""],
+  WIRELESS:       ["", "", "", "Back", ""],
+  TANK_INVENTORY: ["", "", "", "Back", ""],
+  DIAGNOSTICS:    ["Print Diagnostic Ticket", "", "", "Back", ""],
+};
 /* Per the brochure's own two photographed screens: idle reads "Weight
    Preset / Main Menu / Print Last Ticket / (blank) / Start" (Start
    highlighted, bottom-right); active reads "Show Details / Stop / (blank)
    / (blank) / End & Print". Rendered fresh on every state poll rather than
    built once, since which keys are even present changes with delivery state. */
+/* Tracks which row is currently highlighted within whichever menu list is
+   showing -- reset to 0 every time the screen changes so a freshly-opened
+   menu always starts at the top, matching how a real list box behaves. */
+let _menuHighlight = 0;
+let _lastRenderedMenuScreen = null;
+
+function menuItemsForScreen(screen) {
+  if (screen === "MAIN_MENU") return MAIN_MENU_ITEMS;
+  if (screen === "SETUP_MENU_HUB") return SETUP_MENU_ITEMS;
+  return null; // leaf screens (SETUP_REGISTER etc) don't have a sub-list to navigate
+}
+
+function moveMenuHighlight(delta) {
+  const state = window._lastState;
+  if (!state) return;
+  const items = menuItemsForScreen(state.lcriq.screen);
+  if (!items) return;
+  _menuHighlight = (_menuHighlight + delta + items.length) % items.length;
+  renderMenuList(state.lcriq.screen);
+}
+
+function handleMenuSelect(screen) {
+  const items = menuItemsForScreen(screen);
+  if (items) {
+    apiPost("/api/lcriq/navigate", { screen: items[_menuHighlight].screen });
+  }
+  // "Show Details" on the active delivery screen has no separate backend
+  // screen of its own in this sim (it's a display-density toggle on the
+  // SAME delivery screen per the manual's "Active Delivery Screen - Show
+  // Details" description) -- intentionally a no-op here rather than
+  // inventing a navigation target the manual doesn't describe as one.
+}
+
+function handleBack(screen) {
+  // Per the manual's own screen hierarchy: Setup's 9 leaf screens go back
+  // to the Setup Menu hub; the hub and Wireless/Diagnostics/Tank Inventory
+  // (reached directly from Main Menu) go back to Main Menu; Main Menu
+  // itself returns to the idle Home screen.
+  const SETUP_LEAVES = ["SETUP_REGISTER", "SETUP_METER", "SETUP_CALIBRATION", "SETUP_SECURITY", "SETUP_IO"];
+  if (SETUP_LEAVES.includes(screen)) apiPost("/api/lcriq/navigate", { screen: "SETUP_MENU_HUB" });
+  else if (screen === "MAIN_MENU") apiPost("/api/lcriq/navigate", { screen: "HOME" });
+  else apiPost("/api/lcriq/navigate", { screen: "MAIN_MENU" });
+}
+
+function promptWeightPreset() {
+  // A real text-box field would be entered digit-by-digit on the physical
+  // keypad; a browser prompt() is the pragmatic equivalent for this sim
+  // rather than building a full on-screen numeric entry overlay for one field.
+  const current = window._lastState ? window._lastState.lcriq.weight_preset : null;
+  const input = window.prompt("Weight Preset (numeric, blank to clear):", current ?? "");
+  if (input === null) return; // cancelled
+  apiPost("/api/lcriq/set_weight_preset", { value: input.trim() === "" ? null : parseFloat(input) });
+}
+
+function renderMenuList(screen) {
+  const items = menuItemsForScreen(screen);
+  const titleEl = document.getElementById("ovMenuTitle");
+  const listEl = document.getElementById("ovMenuList");
+
+  if (items) {
+    titleEl.textContent = screen === "MAIN_MENU" ? "MAIN MENU" : "SETUP MENU";
+    listEl.innerHTML = items.map((item, i) =>
+      `<div style="padding:3px 6px; ${i === _menuHighlight ? 'background:rgba(0,0,0,0.12); font-weight:700;' : ''}">${i === _menuHighlight ? '&#9654; ' : '&nbsp;&nbsp;'}${item.label}</div>`
+    ).join("");
+  } else {
+    // Leaf setup screens: no sub-list, just identify which one we're on --
+    // the actual fields for each live in the Custom View's deck cards,
+    // which is where this sim's real editable controls are (see the
+    // README's note on Original View vs Custom View's division of labor).
+    const SCREEN_TITLES = {
+      SETUP_REGISTER: "Register Settings", SETUP_METER: "Meter Settings",
+      SETUP_CALIBRATION: "Calibration Settings", SETUP_SECURITY: "Security",
+      SETUP_IO: "I/O Setup", WIRELESS: "Wireless Connectivity",
+      TANK_INVENTORY: "Tank Inventory", DIAGNOSTICS: "Diagnostics",
+    };
+    titleEl.textContent = (SCREEN_TITLES[screen] || screen).toUpperCase();
+    listEl.innerHTML = `<div style="font-size:11px; opacity:0.75; margin-top:4px;">See the panel on the right to edit this screen's settings.</div>`;
+  }
+}
+
+function currentSoftkeyLabels(state) {
+  const screen = state.lcriq.screen;
+  if (screen === "HOME" || screen === "DELIVERY") {
+    return state.lcriq.running ? SOFTKEYS_BY_SCREEN.DELIVERY_RUNNING : SOFTKEYS_BY_SCREEN.HOME;
+  }
+  return SOFTKEYS_BY_SCREEN[screen] || ["", "", "", "Back", ""];
+}
+
 function renderSoftkeys(state) {
+  const labels = currentSoftkeyLabels(state);
   const running = state.lcriq.running;
-  const labels = running
-    ? ["Show Details", "Stop", "", "", "End & Print"]
-    : ["Weight Preset", "Main Menu", "Print Last Ticket", "", "Start"];
   document.querySelectorAll(".ov-softkey").forEach((btn, i) => {
     const label = labels[i];
     btn.textContent = label || "—";
     btn.disabled = !label;
-    btn.classList.toggle("danger", running && i === 1);
+    // "Stop" and "End & Print" both end an active delivery -- highlight
+    // either the same way the brochure's red-accented Stop key suggests.
+    btn.classList.toggle("danger", running && (label === "Stop" || label === "End & Print"));
   });
 }
 
@@ -233,22 +386,51 @@ document.addEventListener("DOMContentLoaded", () => {
 
   buildScreenTabs();
 
-  // Softkey actions depend on running state, matching the real unit's
-  // softkeys changing meaning between the idle and active screens (see
-  // renderSoftkeys' comment for the exact label source).
+  // Softkey actions dispatch by LABEL TEXT rather than fixed index, since
+  // (per the manual) "the onscreen action of the function keys will vary
+  // on different screens or menus" -- index 4 means "Start" on HOME but
+  // "Select" on MAIN_MENU, so matching on what the key actually SAYS right
+  // now is the only robust way to wire this up correctly across screens.
   document.getElementById("ovSoftkeys").addEventListener("click", (e) => {
     const btn = e.target.closest(".ov-softkey");
     if (!btn || btn.disabled) return;
-    const running = window._lastState && window._lastState.lcriq.running;
-    const idx = btn.dataset.idx;
-    if (!running && idx === "4") apiPost("/api/lcriq/run", { running: true });   // Start
-    else if (running && idx === "1") apiPost("/api/lcriq/run", { running: false }); // Stop
-    else if (running && idx === "4") apiPost("/api/lcriq/run", { running: false }); // End & Print
+    const label = btn.textContent;
+    const state = window._lastState;
+    if (!state) return;
+
+    if (label === "Start") apiPost("/api/lcriq/run", { running: true });
+    else if (label === "Stop" || label === "End & Print") apiPost("/api/lcriq/run", { running: false });
+    else if (label === "Main Menu") apiPost("/api/lcriq/navigate", { screen: "MAIN_MENU" });
+    else if (label === "Print Last Ticket") {
+      apiPost("/api/lcriq/reprint_last_ticket", {}).then(r => {
+        if (r.ok) forceShowPrinterPopup(r.state);
+      });
+    }
+    else if (label === "Print Diagnostic Ticket") {
+      // Same backend action (one ticket slot in RegisterBase.last_ticket)
+      apiPost("/api/lcriq/reprint_last_ticket", {}).then(r => {
+        if (r.ok) forceShowPrinterPopup(r.state);
+      });
+    }
+    else if (label === "Weight Preset") promptWeightPreset();
+    else if (label === "Back") handleBack(state.lcriq.screen);
+    else if (label === "Select" || label === "Show Details") handleMenuSelect(state.lcriq.screen);
   });
   document.getElementById("ovOkBtn").addEventListener("click", () => {
-    const running = window._lastState && window._lastState.lcriq.running;
-    apiPost("/api/lcriq/run", { running: !running });
+    const state = window._lastState;
+    if (!state) return;
+    if (state.lcriq.screen === "HOME" || state.lcriq.screen === "DELIVERY") {
+      apiPost("/api/lcriq/run", { running: !state.lcriq.running });
+    } else {
+      handleMenuSelect(state.lcriq.screen);
+    }
   });
+
+  // d-pad up/down move the highlighted row within whichever menu list is
+  // currently shown, per the manual's documented List Box model ("use the
+  // navigation keys to scroll up or down... Press OK to make a selection").
+  document.querySelector(".ov-iq-dpad-btn.up").addEventListener("click", () => moveMenuHighlight(-1));
+  document.querySelector(".ov-iq-dpad-btn.down").addEventListener("click", () => moveMenuHighlight(1));
 
   document.getElementById("runBtn").addEventListener("click", () => apiPost("/api/lcriq/run", { running: true }));
   document.getElementById("stopBtn").addEventListener("click", () => apiPost("/api/lcriq/run", { running: false }));
@@ -290,6 +472,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("disconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcriq/environment", { rtd_probe_connected: false }));
   document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcriq/environment", { rtd_probe_connected: true }));
 
+  buildPulserWidget(document.getElementById("ovPulserMount_lcriq"), "lcriq");
   startPolling("lcriq", onState);
 });
 
@@ -379,16 +562,33 @@ function renderTicket(state) {
 
 function onState(state) {
   window._lastState = state;
+  const screen = state.lcriq.screen;
+  const isMenuScreen = screen !== "HOME" && screen !== "DELIVERY";
 
-  // Original View
+  // Original View: which content the LCD shows depends entirely on which
+  // screen we're on -- this is the literal fix for "the display also
+  // change as per each and every button response". Reset the highlighted
+  // row to the top whenever we've just NAVIGATED to a different menu
+  // screen (not on every poll, or arrow-key navigation would get stomped
+  // back to row 0 every 250ms).
+  if (screen !== _lastRenderedMenuScreen) {
+    _menuHighlight = 0;
+    _lastRenderedMenuScreen = screen;
+  }
+  document.getElementById("ovHomeContent").style.display = isMenuScreen ? "none" : "block";
+  document.getElementById("ovMenuContent").style.display = isMenuScreen ? "block" : "none";
+  if (isMenuScreen) renderMenuList(screen);
+
   document.getElementById("ovLcdMain").textContent = fmt(state.delivery_total_units, 1);
   document.getElementById("ovStatusLine").textContent = state.lcriq.running ? "STATUS: ACTIVE" : "STATUS: IDLE";
   document.getElementById("ovTopRight").textContent =
     (state.lcriq.bluetooth_state === "CONNECTED" ? "BT " : "") + (state.lcriq.wifi_state === "CONNECTED" ? "WIFI" : "");
   // The single most distinctive iQ-specific visual behavior: yellow ONLY
   // while actively fueling, white/gray otherwise -- per the brochure's own
-  // side-by-side idle vs. active product photography.
-  document.getElementById("ovLcd").classList.toggle("idle-theme", !state.lcriq.running);
+  // side-by-side idle vs. active product photography. Menu screens use the
+  // idle theme regardless of delivery state, since the manual's own photos
+  // never show a yellow background on a setup/menu screen.
+  document.getElementById("ovLcd").classList.toggle("idle-theme", !state.lcriq.running || isMenuScreen);
   renderSeal(document.getElementById("ovSeal"), state.locked);
   renderSoftkeys(state);
   maybeShowPrinterPopup(state);
@@ -411,6 +611,7 @@ function onState(state) {
   renderTanks(state);
   renderDiagnostics(state);
   renderErrorBanner(state, "lcriq", document.getElementById("errorBanner"));
+  updatePulserWidget(state, "lcriq");
   renderTicket(state);
 
   document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;

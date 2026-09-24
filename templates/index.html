@@ -32,15 +32,148 @@
   </a>
 </div>
 
-<div class="card" style="margin-top: 28px;">
-  <h2>What's actually simulated</h2>
-  <ul class="checklist">
-    <li>k-Factor (PULSES/UNIT) calibration: overwrite a prover quantity, the register backs out a new k-Factor exactly per the manual's formula</li>
-    <li>VCF temperature compensation across all 9 documented types (Linear, API 24/54/54B/6B/54C/54D, NH3), with the documented Tmin/Tmax domain check (VCF DOMAIN ERROR outside range)</li>
-    <li>A real Pt100 RTD curve (IEC 60751), so the temperature reading, the +/-0.3&deg;C field-adjustment ceiling, and the 100&Omega;&plusmn;20&Omega; continuity check are all internally consistent</li>
-    <li>Multi-point calibration's duplicate-flow-rate and adjacent-0.25% validation rules</li>
-    <li>A background pulser thread reproducing the exact J8 #32/#33/#34 fault-voltage signatures for idle / stalled / good-flow conditions</li>
-    <li>Product-specific UI: LCR-II's rotary switch + 2-button menu, LCR-600's POS tax/discount engine, LCR.iQ's wireless pairing flow and SENSEiQ tank-level loop inputs</li>
-  </ul>
+<div class="card" style="margin-top: 28px;" id="serialCard">
+  <h2>RS-232 / RS-485 → USB Serial Bridge <span class="hint" id="serialStatusHint">checking…</span></h2>
+  <p class="muted" style="font-size: 12.5px; margin: 0 0 14px;">
+    Connects the simulator to a real COM port so PandaBox (or any other integration host) can talk to
+    it as if it were a real LCR meter, or so you can passively monitor real-unit traffic on the wire.
+    Requires <code>pip install pyserial --break-system-packages</code> if not already installed.
+  </p>
+
+  <div class="field-row">
+    <label>COM port</label>
+    <select id="serialPortSel"><option value="">— select a port —</option></select>
+  </div>
+  <div class="field-row">
+    <label>Baud rate</label>
+    <select id="serialBaud">
+      <option value="115200" selected>115200 (LCP default per manual)</option>
+      <option value="19200">19200</option>
+      <option value="9600">9600 (Epson printer default)</option>
+    </select>
+  </div>
+  <div class="field-row">
+    <label>Mode</label>
+    <select id="serialMode">
+      <option value="ACT_AS_METER">Act as Meter — simulator responds to host commands</option>
+      <option value="PASSIVE_MONITOR">Passive Monitor — sniff real-unit wire traffic</option>
+    </select>
+  </div>
+  <div class="field-row">
+    <label>LCP node address (1–250)</label>
+    <input type="number" id="serialNode" value="1" min="1" max="250" style="width:80px;">
+  </div>
+  <div class="field-row">
+    <label>Meter to simulate</label>
+    <select id="serialMeter">
+      <option value="lcr2">LCR-II</option>
+      <option value="lcr600">LCR 600</option>
+      <option value="lcriq">LCR.iQ</option>
+    </select>
+  </div>
+  <div class="btn-bar" style="margin-top: 12px;">
+    <button class="btn primary" id="serialStartBtn">Start Bridge</button>
+    <button class="btn danger" id="serialStopBtn">Stop Bridge</button>
+    <button class="btn" id="serialRefreshBtn">↻ Refresh Ports</button>
+  </div>
+
+  <div style="margin-top: 18px; border-top: 1px solid var(--ui-border); padding-top: 14px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <strong style="font-size: 13px;">Live Monitor</strong>
+      <div style="display:flex; gap: 8px; align-items: center;">
+        <span class="muted" style="font-size: 11px;">Auto-polls every 500ms while running</span>
+        <button class="btn" id="serialClearBtn" style="padding: 3px 10px; font-size: 11px;">Clear</button>
+      </div>
+    </div>
+    <div id="serialMonitor" style="font-family: var(--font-mono); font-size: 11px;
+      background: var(--ui-bg); border: 1px solid var(--ui-border); border-radius: 6px;
+      padding: 10px; min-height: 120px; max-height: 300px; overflow-y: auto;
+      color: var(--ui-text-dim); white-space: pre-wrap;">Waiting for traffic…</div>
+  </div>
+
+  <div style="margin-top: 14px; background: rgba(255,180,0,0.07); border: 1px solid rgba(255,180,0,0.2);
+    border-radius: 6px; padding: 12px; font-size: 11.5px; color: #c9a030;" id="serialProtoNote">
+    ⚠ LCP protocol layer is currently stubbed — the bridge can open the port and log raw bytes,
+    but will not yet send meaningful responses until the LCP Host Interface Document is available.
+    See <code>meter_core/serial_bridge.py</code> for exactly what needs to be filled in.
+  </div>
 </div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let _serialMonitorPoll = null;
+const monEl = () => document.getElementById("serialMonitor");
+
+async function loadSerialStatus() {
+  const r = await fetch("/api/serial/status");
+  const d = await r.json();
+  const s = d.serial;
+  document.getElementById("serialStatusHint").textContent =
+    s.running ? `▶ Running on ${s.config.port}` : (s.pyserial_available ? "● Stopped" : "⚠ pyserial not installed");
+  document.getElementById("serialStartBtn").disabled = s.running;
+  document.getElementById("serialStopBtn").disabled = !s.running;
+  document.getElementById("serialProtoNote").style.display = s.protocol_stub ? "block" : "none";
+  if (s.running && !_serialMonitorPoll) startMonitorPoll();
+  if (!s.running && _serialMonitorPoll) { clearInterval(_serialMonitorPoll); _serialMonitorPoll = null; }
+  return s;
+}
+
+async function loadPorts() {
+  const s = await (await fetch("/api/serial/status")).json();
+  const sel = document.getElementById("serialPortSel");
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a port —</option>';
+  (s.serial.available_ports || []).forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.device;
+    opt.textContent = `${p.device} — ${p.description}`;
+    if (p.device === prev) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function startMonitorPoll() {
+  _serialMonitorPoll = setInterval(async () => {
+    const r = await fetch("/api/serial/monitor");
+    const d = await r.json();
+    if (!d.entries.length) return;
+    const box = monEl();
+    d.entries.forEach(e => {
+      const line = `[${new Date(e.ts * 1000).toLocaleTimeString()}] ${e.direction.toUpperCase()} ${e.raw_hex}${e.decoded ? ' → ' + e.decoded : ''}`;
+      box.textContent += "\n" + line;
+    });
+    box.scrollTop = box.scrollHeight;
+  }, 500);
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  await loadSerialStatus();
+  await loadPorts();
+
+  document.getElementById("serialRefreshBtn").addEventListener("click", loadPorts);
+  document.getElementById("serialClearBtn").addEventListener("click", () => { monEl().textContent = "Cleared."; });
+
+  document.getElementById("serialStartBtn").addEventListener("click", async () => {
+    await fetch("/api/serial/config", { method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        port: document.getElementById("serialPortSel").value,
+        baud: parseInt(document.getElementById("serialBaud").value),
+        mode: document.getElementById("serialMode").value,
+        lcp_node_address: parseInt(document.getElementById("serialNode").value),
+      })});
+    const r = await fetch("/api/serial/start", { method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ product_key: document.getElementById("serialMeter").value }) });
+    const d = await r.json();
+    if (!d.ok) { alert("Failed to start: " + d.error); return; }
+    loadSerialStatus();
+  });
+
+  document.getElementById("serialStopBtn").addEventListener("click", async () => {
+    await fetch("/api/serial/stop", { method: "POST" });
+    loadSerialStatus();
+  });
+});
+</script>
 {% endblock %}

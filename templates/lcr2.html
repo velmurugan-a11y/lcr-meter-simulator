@@ -43,6 +43,10 @@
             </div>
           </div>
         </div>
+        <!-- Internal Pulser (PN 82597) — added below the selector/buttons
+             per the instrument layout: the pulser is a separate physical
+             component, not part of the selector switch assembly. -->
+        <div id="ovPulserMount_lcr2"></div>
       </div>
     </div>
 
@@ -273,6 +277,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("reconnectRtdBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { rtd_probe_connected: true }));
   document.getElementById("applyVoltageBtn").addEventListener("click", () => apiPost("/api/lcr2/environment", { power_voltage: parseFloat(document.getElementById("powerVoltage").value) }));
 
+  // Build the Internal Pulser widget and attach it to its mount point.
+  buildPulserWidget(document.getElementById("ovPulserMount_lcr2"), "lcr2");
+
   startPolling("lcr2", onState);
 });
 
@@ -405,6 +412,7 @@ function onState(state) {
   renderCalPoints(state);
   renderDiagnostics(state);
   renderErrorBanner(state, "lcr2", document.getElementById("errorBanner"));
+  updatePulserWidget(state, "lcr2");
   document.getElementById("gaugePulses").textContent = state.pulser.total_pulses;
   document.getElementById("gaugeK").textContent = fmt(state.active_product.pulses_per_unit, 2);
   document.getElementById("lockHint").textContent = state.locked

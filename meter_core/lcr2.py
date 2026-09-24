@@ -42,6 +42,12 @@ class LCR2Register(RegisterBase):
         self.selector = position
 
         if position == "RUN":
+            # Per Quick Reference card: "The LCR-II will not allow printing a
+            # new delivery ticket until the last delivery ticket has been
+            # printed." -- delivery_pending_print is True when a ticket was
+            # produced but the selector was never moved to PRINT to clear it.
+            if self.delivery_pending_print:
+                self._raise_error("PRINT TICKET FIRST")
             if not self.delivery_active:
                 self.start_delivery()
         elif position == "STOP":
@@ -56,7 +62,16 @@ class LCR2Register(RegisterBase):
                     self.stop_delivery()
             self.menu_field = "PROD"
         elif position == "PRINT":
-            self.delivery_pending_print = False
+            # Per Quick Reference: "Turn the Selector Switch from RUN to PRINT
+            # to print a delivery ticket." PRINT is the operator signal that
+            # the ticket is being printed -- it clears the pending flag,
+            # allowing the next RUN. If no ticket is pending (e.g. the
+            # selector was already at STOP when the operator moves to PRINT),
+            # this is a no-op rather than an error; the duplicate-ticket
+            # procedure (PRINT→STOP) is handled by the pending_print being
+            # False going into STOP which just clears it again harmlessly.
+            if self.delivery_pending_print:
+                self.delivery_pending_print = False
         elif position == "SHIFT_PRINT":
             self._shift_print_started_at = time.monotonic()
         elif position == "CALIBRATION":
