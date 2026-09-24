@@ -90,6 +90,8 @@ class Product:
     # LCR-600/iQ POS fields
     price_per_unit: float = 0.0
     tax_category: int = 0
+    # LCP protocol: preset in user-units (gallons); written by SetField #5 / read via preset_units
+    preset_units: float = 0.0
 
     def aux_mult(self) -> float:
         return round(self.aux_mult_sg * 8.345, 4) if self.aux_mult_sg else 0.0
@@ -127,6 +129,9 @@ class RegisterBase:
         self.delivery_pending_print = False
         self.last_ticket: dict | None = None
         self.gross_total = 0.0  # lifetime, 10-digit totalizer concept
+        # LCP-facing totalizer: starts at 5000.0 gal (50000 tenths) so the
+        # simulated meter looks like a real unit with prior delivery history.
+        self._lcp_base_tenths = 50000
         self.no_flow_timer_minutes = 5.0
         self._no_flow_since: float | None = None
         self._last_pulses_seen = 0
@@ -186,6 +191,17 @@ class RegisterBase:
         elif self.power_voltage < 11:
             msgs.append("LOW VOLTAGE — below 11V minimum recommended under load")
         return msgs
+
+    # LCP protocol bridge helpers — read by LcpEndpoint._sync_from_register()
+    @property
+    def _delivery_units(self) -> float:
+        """Current delivery volume in gallons (same as delivery_total_units)."""
+        return self.delivery_total_units
+
+    @property
+    def _gross_total_tenths(self) -> int:
+        """Lifetime totalizer in tenths of a gallon, including LCP base offset."""
+        return self._lcp_base_tenths + int(self.gross_total * 10)
 
     # ------------------------------------------------------------------ #
     # Calibration — single point (k-Factor / PROVER QTY workflow)

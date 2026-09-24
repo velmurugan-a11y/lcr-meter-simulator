@@ -152,39 +152,46 @@
 
   <!-- Controls -->
   <div class="sm-controls">
-    <!-- Auto-detect (default) or manual -->
     <div class="sm-field">
-      <label>
-        <input type="checkbox" id="chkAutoDetect" checked>
-        Auto-detect port &amp; baud
-      </label>
-    </div>
-    <div id="manualFields" style="display:none; gap:10px; display:none;" class="sm-field">
       <label>Port</label>
-      <select id="selPort" style="min-width:160px;"><option value="">— select —</option></select>
+      <select id="selPort" style="min-width:110px;"><option value="COM7">COM7</option></select>
+    </div>
+    <div class="sm-field">
       <label>Baud</label>
       <select id="selBaud">
-        <option value="115200" selected>115200</option>
+        <option value="19200" selected>19200 (LCR)</option>
+        <option value="115200">115200</option>
         <option value="57600">57600</option>
         <option value="38400">38400</option>
-        <option value="19200">19200</option>
         <option value="9600">9600</option>
       </select>
     </div>
     <div class="sm-field">
-      <label>Mode</label>
-      <select id="selMode">
-        <option value="PASSIVE_MONITOR">Passive Monitor</option>
-        <option value="ACT_AS_METER">Act as Meter</option>
-      </select>
+      <label>Node</label>
+      <input type="number" id="inpNode" value="1" min="1" max="250" style="width:55px;">
     </div>
     <div class="sm-field">
-      <label>Poll every</label>
-      <input type="number" id="inpPoll" value="500" min="100" max="5000" step="100"
-             style="width:70px;"> <span style="font-size:11px; color:var(--ui-text-dim);">ms</span>
+      <label>Meter</label>
+      <select id="selMeter">
+        <option value="lcr2" selected>LCR-II</option>
+        <option value="lcr600">LCR-600</option>
+        <option value="lcriq">LCR.iQ</option>
+      </select>
     </div>
     <button class="btn primary" id="btnConnect">Connect</button>
     <button class="btn danger"  id="btnDisconnect" disabled>Disconnect</button>
+  </div>
+
+  <!-- LCP endpoint live state -->
+  <div class="sm-banner" id="lcpBanner" style="display:none; flex-wrap:wrap; gap:14px;">
+    <div class="sm-pill"><span class="lbl">LCP Node</span><span class="val" id="lcpNode">—</span></div>
+    <div class="sm-pill"><span class="lbl">State</span><span class="val" id="lcpState" style="color:#e2c96a;">—</span></div>
+    <div class="sm-pill"><span class="lbl">Gross</span><span class="val" id="lcpGross">—</span></div>
+    <div class="sm-pill"><span class="lbl">Flow</span><span class="val rx" id="lcpFlow">—</span></div>
+    <div class="sm-pill"><span class="lbl">Total</span><span class="val" id="lcpTotal">—</span></div>
+    <div class="sm-pill"><span class="lbl">Preset</span><span class="val" id="lcpPreset">—</span></div>
+    <div class="sm-pill"><span class="lbl">RX frames</span><span class="val" id="lcpRxF">0</span></div>
+    <div class="sm-pill"><span class="lbl">TX frames</span><span class="val tx" id="lcpTxF">0</span></div>
   </div>
 
   <!-- Traffic window -->
@@ -196,21 +203,16 @@
     <div id="smLog">
       <div class="sm-empty" id="smEmpty">
         Waiting for connection…<br>
-        <strong>Click Connect — port and baud are detected automatically.</strong><br><br>
+        <strong>Select port (default COM7) and click Connect.</strong><br><br>
         <span style="color:#e2c96a;">
-        LCR-II / LCR-600 (RS-232 via J3):<br>
-        &nbsp;&nbsp;9600 baud 8N1 no flow control<br>
-        &nbsp;&nbsp;J3 pin48(TXD/orange) → USB-RS232 RX<br>
-        &nbsp;&nbsp;J3 pin49(RXD/gray) → USB-RS232 TX<br>
-        &nbsp;&nbsp;J3 pin51(GND/white) → GND<br>
-        &nbsp;&nbsp;Jumper J10 on CPU board must be in RS-232 position<br>
-        <br>
-        LCR.iQ (CAN via J8 — CAN-to-RS232 bridge):<br>
-        &nbsp;&nbsp;J8 pin46 = CAN-H → bridge CAN-H<br>
-        &nbsp;&nbsp;J8 pin45 = CAN-L → bridge CAN-L<br>
-        &nbsp;&nbsp;J8 pin43 = EARTH/Shield → bridge shield/GND<br>
-        &nbsp;&nbsp;Bridge serial side → your USB-RS232 converter<br>
-        &nbsp;&nbsp;SAE J1939 @ 250 kbps CAN, 115200 baud serial side
+        PandaBox → USB-to-RS232 (COM7) → LCR Simulator<br>
+        &nbsp;&nbsp;19200 baud 8N1, no flow control<br>
+        &nbsp;&nbsp;PandaBox LCR Port 1 (USART1 PA2/PA3) → DB25 J1<br>
+        &nbsp;&nbsp;J1 pin 14 = TX (from PandaBox) → RS232 RX<br>
+        &nbsp;&nbsp;J1 pin 15 = RX (to PandaBox) → RS232 TX<br>
+        &nbsp;&nbsp;J1 pin 11 = GND<br>
+        &nbsp;&nbsp;Transceiver: SIT3088EESA (U4/U104) RS485 + BL13232 RS232<br>
+        &nbsp;&nbsp;RS232 power: PE5 (must be HIGH); RS485 power: PE6
         </span>
       </div>
     </div>
@@ -240,64 +242,95 @@ const log = $("smLog");
 
 // ─── Refresh port list ──────────────────────────────────────────────────────
 async function refreshPorts() {
-  const r = await fetch("/api/serial/status");
-  const d = await r.json();
-  const sel = $("selPort");
-  const prev = sel.value;
-  while (sel.options.length > 1) sel.remove(1);
-  (d.serial.available_ports || []).forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p.device;
-    const ftdi = p.is_ftdi ? " ★ FTDI" : "";
-    opt.textContent = `${p.device}  —  ${p.description}${ftdi}`;
-    if (p.device === prev) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  updateBanner(d.serial);
+  try {
+    const r = await fetch("/api/serial/status");
+    const d = await r.json();
+    const sel = $("selPort");
+    const prev = sel.value;
+    while (sel.options.length > 0) sel.remove(0);
+    // available_ports is a plain list of strings (e.g. ["COM7", "COM9"])
+    (d.serial.available_ports || []).forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p;
+      opt.textContent = p;
+      if (p === prev || p === "COM7") opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (sel.options.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "COM7"; opt.textContent = "COM7 (default)";
+      sel.appendChild(opt);
+    }
+    updateBanner(d.serial);
+  } catch (_) {}
 }
 
 // ─── Banner update ──────────────────────────────────────────────────────────
 function fmtBytes(n) {
+  if (!n) return "0 B";
   if (n < 1024) return n + " B";
   return (n / 1024).toFixed(1) + " KB";
 }
+
+function updateLcpBanner(ep) {
+  if (!ep) { $("lcpBanner").style.display = "none"; return; }
+  $("lcpBanner").style.display = "flex";
+  $("lcpNode").textContent   = ep.node || "—";
+  const stateCol = { RUN:"#6fcf6f", STOP:"#e2c96a", END:"#8a9ab8", WAIT_NOFLOW:"#f5a623" };
+  $("lcpState").textContent  = ep.state || "—";
+  $("lcpState").style.color  = stateCol[ep.state] || "#e2c96a";
+  $("lcpGross").textContent  = ep.gross_tenths != null ? (ep.gross_tenths/10).toFixed(1)+" gal" : "—";
+  $("lcpFlow").textContent   = ep.flow_tenths_min != null ? (ep.flow_tenths_min/10).toFixed(1)+" gal/min" : "—";
+  $("lcpTotal").textContent  = ep.gross_total_tenths != null ? (ep.gross_total_tenths/10).toFixed(1)+" gal" : "—";
+  $("lcpPreset").textContent = ep.preset_tenths != null ? (ep.preset_tenths > 0 ? (ep.preset_tenths/10).toFixed(1)+" gal" : "—") : "—";
+  $("lcpRxF").textContent    = ep.rx_frames || 0;
+  $("lcpTxF").textContent    = ep.tx_frames || 0;
+}
+
 function updateBanner(s) {
-  const status = s.running ? "CONNECTED"
-                : s.detect_status === "scanning" ? "SCANNING…"
-                : s.detect_status === "failed"   ? "DETECT FAILED"
-                : "DISCONNECTED";
-  const col = s.running ? "#6fcf6f"
-            : s.detect_status === "scanning" ? "#e2c96a"
-            : "#f56565";
-  $("sbStatus").textContent = status;
+  const errMsg = s.error ? " — " + s.error : "";
+  const status  = s.running ? "CONNECTED" : "DISCONNECTED";
+  const col     = s.running ? "#6fcf6f" : (s.error ? "#f5a623" : "#f56565");
+  $("sbStatus").textContent = status + errMsg;
   $("sbStatus").style.color = col;
-  $("sbPort").textContent   = s.connected_port || s.config.port || "—";
-  $("sbBaud").textContent   = s.connected_baud || (s.running ? s.config.baud : "—");
-  $("sbProto").textContent  = s.detected_protocol && s.detected_protocol !== 'unknown'
-                              ? s.detected_protocol.split(' ')[0] : "—";
-  $("sbRx").textContent     = fmtBytes(s.rx_total_bytes || 0);
-  $("sbTx").textContent     = fmtBytes(s.tx_total_bytes || 0);
+  $("sbPort").textContent   = s.port || "—";
+  $("sbBaud").textContent   = s.baud ? `${s.baud} 8N1` : "—";
+  $("sbProto").textContent  = s.running ? `LCP node ${s.node}` : "—";
+  $("sbRx").textContent     = fmtBytes(s.rx_total);
+  $("sbTx").textContent     = fmtBytes(s.tx_total);
   if (s.last_rx_ts) {
     $("sbLastRx").textContent = new Date(s.last_rx_ts * 1000).toLocaleTimeString();
   }
-  const scanning = s.detect_status === "scanning";
-  $("scanBar").style.display = scanning ? "flex" : "none";
-  $("btnConnect").disabled    = s.running || scanning;
-  $("btnDisconnect").disabled = !s.running && !scanning;
+  $("scanBar").style.display  = "none";
+  $("btnConnect").disabled    = s.running;
+  $("btnDisconnect").disabled = !s.running;
   _running = s.running;
+  updateLcpBanner(s.endpoint || null);
+}
+
+// ─── LCP frame highlighter ──────────────────────────────────────────────────
+function colorHex(hexStr, decoded) {
+  // decoded contains "LCP→node..." or "LCP←..." — colour the sync bytes orange
+  if (!hexStr) return "";
+  const bytes = hexStr.split(" ");
+  if (bytes[0] === "7E" && bytes[1] === "7E") {
+    const head = `<span style="color:#f5a623">${bytes.slice(0,2).join(" ")}</span>`;
+    const rest = escHtml(bytes.slice(2).join(" "));
+    return head + " " + rest;
+  }
+  return escHtml(hexStr);
 }
 
 // ─── Append a row to the traffic log ───────────────────────────────────────
 function appendRow(e) {
   const empty = $("smEmpty");
   if (empty) empty.remove();
-
   while (log.children.length >= 3000) log.removeChild(log.firstChild);
 
   const d   = new Date(e.ts * 1000);
   const ts  = d.toTimeString().slice(0,8) + "." + String(d.getMilliseconds()).padStart(3,"0");
   const cnt = e.byte_count ? `+${e.byte_count}` : "";
-  const dirLabel = { rx:"← RX", tx:"→ TX", info:"INFO", probe:"SCAN", error:"ERR", can:"CAN" }[e.direction] || e.direction;
+  const dirLabel = { rx:"← RX", tx:"→ TX", info:"INFO", probe:"SCAN", error:"ERR" }[e.direction] || e.direction;
 
   const row = document.createElement("div");
   row.className = `sm-row ${e.direction}`;
@@ -305,14 +338,14 @@ function appendRow(e) {
     `<span class="sm-ts">${ts}</span>` +
     `<span class="sm-dir ${e.direction}">${dirLabel}</span>` +
     `<span class="sm-cnt">${cnt}</span>` +
-    `<span class="sm-hex">${escHtml(e.raw_hex)}</span>` +
+    `<span class="sm-hex">${colorHex(e.hex_data, e.decoded)}</span>` +
     `<span class="sm-asc">${escHtml(e.decoded || "")}</span>`;
   log.appendChild(row);
-
   if ($("chkAutoScroll").checked) log.scrollTop = log.scrollHeight;
 }
+
 function escHtml(s) {
-  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
 
 // ─── Poll the monitor endpoint ──────────────────────────────────────────────
@@ -322,39 +355,37 @@ async function pollMonitor() {
     const d = await r.json();
     updateBanner(d.serial);
     d.entries.forEach(appendRow);
-    if (d.serial.detect_status === "scanning") {
-      $("scanMsg").textContent = "Auto-detecting port and baud rate…";
-    }
   } catch (_) {}
 }
 
-function startPoll() { if (!_poll) _poll = setInterval(pollMonitor, 200); }
+function startPoll() { if (!_poll) _poll = setInterval(pollMonitor, 250); }
 function stopPoll()  { if (_poll) { clearInterval(_poll); _poll = null; } }
 
 // ─── Connect / disconnect ───────────────────────────────────────────────────
 async function doConnect() {
-  const autoDetect = $("chkAutoDetect").checked;
-  const cfg = {
-    auto_detect:      autoDetect,
-    mode:             $("selMode").value,
-    poll_interval_ms: parseInt($("inpPoll").value) || 500,
-  };
-  if (!autoDetect) {
-    const port = $("selPort").value;
-    if (!port) { alert("Select a port or enable Auto-detect."); return; }
-    cfg.port = port;
-    cfg.baud = parseInt($("selBaud").value);
-  }
-  await fetch("/api/serial/config", { method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) });
-  const r = await fetch("/api/serial/start", { method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({ product_key: "lcriq" }) });
+  const port        = $("selPort").value;
+  const baud        = parseInt($("selBaud").value) || 19200;
+  const node        = parseInt($("inpNode").value) || 1;
+  const product_key = $("selMeter").value;
+  if (!port) { alert("Select a port."); return; }
+
+  // Configure then start
+  await fetch("/api/serial/config", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ port, baud, node })
+  });
+  const r = await fetch("/api/serial/start", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ product_key })
+  });
   const d = await r.json();
-  if (!d.ok) { alert("Error: " + d.error); return; }
+  if (!d.ok) { alert("Error: " + (d.error || "unknown")); return; }
   startPoll();
   updateBanner(d.serial);
 }
+
 async function doDisconnect() {
   await fetch("/api/serial/stop", { method:"POST" });
   stopPoll();
@@ -364,8 +395,11 @@ async function doDisconnect() {
 
 // ─── Send helpers ───────────────────────────────────────────────────────────
 async function sendHex(hex) {
-  await fetch("/api/serial/send", { method:"POST",
-    headers:{"Content-Type":"application/json"}, body:JSON.stringify({ hex }) });
+  await fetch("/api/serial/send", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ hex })
+  });
 }
 async function sendText(text) {
   const hex = Array.from(new TextEncoder().encode(text))
@@ -377,28 +411,25 @@ async function sendText(text) {
 document.addEventListener("DOMContentLoaded", async () => {
   await refreshPorts();
 
-  $("chkAutoDetect").addEventListener("change", e => {
-    $("manualFields").style.display = e.target.checked ? "none" : "flex";
-  });
   $("btnConnect").addEventListener("click", doConnect);
   $("btnDisconnect").addEventListener("click", doDisconnect);
   $("btnClear").addEventListener("click", () => {
     log.innerHTML = '<div class="sm-empty" id="smEmpty">Log cleared.</div>';
   });
-  $("btnSendHex").addEventListener("click", () => sendHex($("inpSend").value));
+  $("btnSendHex").addEventListener("click",  () => sendHex($("inpSend").value));
   $("btnSendText").addEventListener("click", () => sendText($("inpSend").value));
-  $("btnSendEnq").addEventListener("click", () => sendHex("05"));
+  $("btnSendEnq").addEventListener("click",  () => sendHex("05"));
   $("inpSend").addEventListener("keydown", e => {
     if (e.key === "Enter") sendHex($("inpSend").value);
   });
 
-  // Refresh port list every 4 s (in case converter is plugged in later)
-  setInterval(refreshPorts, 4000);
+  // Refresh port list every 5 s (in case converter is plugged in later)
+  setInterval(refreshPorts, 5000);
 
   // If bridge is already running (started elsewhere), begin polling
   const s = await (await fetch("/api/serial/status")).json();
   updateBanner(s.serial);
-  if (s.serial.running || s.serial.detect_status === "scanning") startPoll();
+  if (s.serial.running) startPoll();
 });
 </script>
 {% endblock %}

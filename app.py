@@ -498,16 +498,16 @@ def serial_status():
 
 @app.route("/api/serial/config", methods=["POST"])
 def serial_config():
-    """Body: {port?, baud?, mode?, lcp_node_address?, auto_detect?, poll_interval_ms?}"""
+    """Body: {port?, baud?, node?, product_key?}"""
     try:
         body = request.get_json(force=True) or {}
-        cfg = _serial_bridge.config
-        if "port"             in body: cfg.port             = body["port"] or None
-        if "baud"             in body: cfg.baud             = int(body["baud"])
-        if "mode"             in body: cfg.mode             = body["mode"]
-        if "lcp_node_address" in body: cfg.lcp_node_address = int(body["lcp_node_address"])
-        if "auto_detect"      in body: cfg.auto_detect      = bool(body["auto_detect"])
-        if "poll_interval_ms" in body: cfg.poll_interval_ms = max(100, int(body["poll_interval_ms"]))
+        kw = {}
+        if "port"             in body: kw["port"]         = body["port"]
+        if "baud"             in body: kw["baud"]         = int(body["baud"])
+        if "node"             in body: kw["node"]         = int(body["node"])
+        if "lcp_node_address" in body: kw["node"]         = int(body["lcp_node_address"])  # compat alias
+        if "product_key"      in body: kw["product_key"]  = body["product_key"]
+        _serial_bridge.configure(**kw)
         return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
     except Exception as e:
         return error_response(e)
@@ -515,17 +515,17 @@ def serial_config():
 
 @app.route("/api/serial/start", methods=["POST"])
 def serial_start():
-    """Body: {product_key} — which meter's state to serve as the simulated meter."""
+    """Body: {product_key?} — which meter's state to serve as the simulated meter."""
     try:
         body = request.get_json(force=True) or {}
-        product_key = body.get("product_key", "lcr2")
+        product_key = body.get("product_key", _serial_bridge.cfg.product_key)
 
         def getter():
             return get_register(product_key)
 
-        result = _serial_bridge.start(getter)
-        result["serial"] = _serial_bridge.to_dict()
-        return jsonify(result)
+        _serial_bridge.configure(product_key=product_key)
+        _serial_bridge.start(getter)
+        return jsonify({"ok": True, "serial": _serial_bridge.to_dict()})
     except Exception as e:
         return error_response(e)
 
@@ -549,7 +549,7 @@ def serial_send():
     try:
         body = request.get_json(force=True) or {}
         raw = bytes.fromhex(body.get("hex", "").replace(" ", "").replace(":", ""))
-        _serial_bridge.send_bytes(raw)
+        _serial_bridge.send_raw(raw)
         return jsonify({"ok": True})
     except Exception as e:
         return error_response(e)
