@@ -20,17 +20,16 @@ hardware on the bench.
 That's it for today's build. You do **not** need Node.js, a database, or
 Docker.
 
-### Will be needed later (for the real RS-232/RS-485-over-USB step, point 2
-of your request — not wired up yet, see the "What's not built yet" section
-at the bottom)
+### Also required (for the RS-232 serial bridge — V5, wired up and ready)
 
 | Software | Why |
 |---|---|
-| `pyserial` (a Python package, `pip install pyserial`) | Lets Python talk to a COM port |
-| The actual USB driver for your RS-232/RS-485-to-USB converter (e.g. FTDI, CH340, CP2102 chipset driver depending on which converter you bought) | Without this, Windows/your OS won't show a COM port at all for the converter |
+| `pyserial` (included in `requirements.txt`, installed by `pip install -r requirements.txt`) | Lets Python talk to COM7 (or whichever port your USB-to-RS232 converter appears on) |
+| USB driver for your RS-232 converter (FTDI / CH340 / CP2102 — depends on converter chipset) | Without this, Windows won't show a COM port for the converter at all |
 
-You don't need to install these yet. They're listed here so you have
-everything ready when we wire up the hardware step.
+The `pip install -r requirements.txt` step (Step 3 below) installs `pyserial`
+automatically. The USB driver must be installed separately — check Device Manager
+if the COM port doesn't appear after plugging in the converter.
 
 ---
 
@@ -130,24 +129,43 @@ real; this is not a Weights & Measures-traceable instrument.
 
 ---
 
-## 6. What's not built yet
+## 6. V5 — LCP serial bridge (USB-to-RS232, COM7, 19200 8N1)
 
-You asked for the RS-232/RS-485-over-USB integration (the simulator acting
-as a real LCR on the wire, or monitoring a real one) and LCR.iQ daisy-chain
-printing. Both are intentionally not in this build:
+V5 implements the full **Liquid Controls Protocol (LCP)** binary protocol so
+PandaBox firmware can communicate with this simulator exactly as it would with
+a real LCR meter over RS-232.
 
-- **Serial/COM port integration**: this needs the actual LectroCount wire
-  protocol (command bytes, message framing, checksums) — the manuals I've
-  read document the *physical pins* (which wire is RS-485 A/B, etc.) and
-  the *data types* used inside messages (how many bytes a "Volume" field
-  is), but not the message structure itself. Building this convincingly
-  needs either the real protocol spec or your existing PandaBox serial
-  code that already talks to a real LCR, so the simulator's responses can
-  be checked against what your code actually expects. This is planned as
-  the next phase, not skipped — see the project board / your own notes for
-  when to revisit.
-- **LCR.iQ daisy-chain printing**: explicitly deferred at your request,
-  to be planned later.
+**Physical path:**
+```
+Mobile App / PandaBox Tester
+        ↓ BLE
+PandaBox firmware (GD32F305VCT6)
+        ↓ USART1/2 (19200 8N1) → RS-232 DB25 J1/J2
+USB-to-RS232 converter (COM7)
+        ↓
+LCR Simulator (this program, python app.py)
+```
+
+**What's implemented:**
+
+| File | What it does |
+|---|---|
+| `meter_core/lcp.py` | LCP frame build / parse / CRC-16 / byte stuffing / 5 self-test vectors |
+| `meter_core/lcp_endpoint.py` | All LCP commands (GetProductID, Get/SetField, GetMachineStatus, IssueCommand, SetAddress, GetVersion, GetSecurityLevel, GetDeliveryStatus, Extended Get/SetField) |
+| `meter_core/serial_bridge.py` | Background thread: opens COM7 at 19200 8N1, scans for 7E 7E frames, dispatches to LcpEndpoint, writes response back |
+
+**How to connect (V5):**
+1. Plug USB-to-RS232 into COM7 (check Device Manager if unsure)
+2. Wire: PandaBox DB25 J1 pin 14 (TX) → RS232 RX, J1 pin 15 (RX) → RS232 TX, J1 pin 11 → GND
+3. Run `python app.py`
+4. Open `http://localhost:5000/serial`
+5. Select COM7 / 19200 / Node 1 / LCR-II → click **Connect**
+
+PandaBox will then receive valid LCP responses for all poll fields (#2 GrossQty,
+#4 FlowRate, #17 GrossTotal, #18 NetTotal, #100 PrevGross, #101 PrevNet) and
+all IssueCommand codes (Start=0, Pause=1, End=2, Print=6).
+
+See `SERIAL_BRINGUP.md` for the full wiring and loopback-test procedure.
 
 ---
 
@@ -156,15 +174,23 @@ printing. Both are intentionally not in this build:
 ```
 app.py                    Flask routes (thin — delegates all logic to meter_core)
 meter_core/
+  lcp.py                   LCP frame builder/parser/CRC + 5 self-test vectors  ← V5
+  lcp_endpoint.py           LCP command handler (all 10 commands)               ← V5
+  serial_bridge.py          SerialBridge: COM7 19200 8N1, background RX thread  ← V5
   rtd_vcf.py               Pt100 curve + VCF compensation (shared physics)
   pulser.py                 Background thread simulating the J8 pulser
   register_base.py          Shared calibration/delivery/error-dictionary logic
-  printer.py                 Ticket formatting + printer-model definitions
-  lcr2.py                    LCR-II: rotary selector + SELECT/INCREASE menu
-  lcr600.py                   LCR-600: rotary + alphanumeric keypad, POS engine
-  lcriq.py                     LCR.iQ: wireless, SENSEiQ, digital valve ramp
-templates/                  Jinja2 pages (one per product + shared base/index)
+  printer.py                Ticket formatting + printer-model definitions
+  lcr2.py                   LCR-II: rotary selector + SELECT/INCREASE menu
+  lcr600.py                 LCR-600: rotary + alphanumeric keypad, POS engine
+  lcriq.py                  LCR.iQ: wireless, SENSEiQ, digital valve ramp
+templates/
+  serial_monitor.html       LCP serial monitor: live frame log, LCP status      ← V5
+  (others)                  Per-product simulator UI pages
 static/                     Shared CSS + polling JS + Original View assets
-test_core.py                Standalone test script, run before touching the UI
+test_core.py                Standalone tests (66 checks incl. LCP self-test)
 browser_check.py            Playwright-based check that drives the real pages
+tools/
+  serial_loopback_test.py   USB-RS232 loopback verification (run before wiring PandaBox)
+  serial_heartbeat.py       Sends heartbeat bytes to confirm TX→PandaBox link
 ```

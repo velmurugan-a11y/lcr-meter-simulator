@@ -1,219 +1,195 @@
-# Serial Bridge Bring-Up Guide
-## Getting the simulator talking to PandaBox over USB → RS-232
+# Serial Bridge Bring-Up Guide (V5)
+## Connecting the LCR Simulator to PandaBox over USB → RS-232
 
 ---
 
-## Why the simulator must run on your laptop/PC, not in the cloud
+## Architecture
 
-The simulator's Flask server runs wherever you run `python app.py`.
-The USB-to-RS232 converter is plugged into **your machine's USB port**.
-These need to be on the **same physical machine** — the browser can be
-anywhere, but the Python process talking to the COM port must be local.
+```
+Mobile App / PandaBox Tester  (BLE)
+        ↓
+PandaBox firmware (GD32F305VCT6)
+        ↓  USART1 (LCR Port 1): PA2=TX / PA3=RX, 19200 8N1
+           RS-232 power: PE5=HIGH (enables BL13232 transceiver)
+        ↓  DB25 J1 connector
+           pin 14 = TX (from PandaBox)
+           pin 15 = RX (to PandaBox)
+           pin 11 = GND
+        ↓  USB-to-RS232 converter  →  COM7 (Windows default)
+        ↓
+LCR Simulator (python app.py, http://localhost:5000/serial)
+```
+
+The simulator must run on the **same physical machine** the USB-to-RS232
+converter is plugged into — the serial port is not accessible over a network.
+The browser can be anywhere.
 
 ---
 
-## Step 0 — Find your port name
+## Step 0 — Install the USB converter driver and find the COM port
 
 **Windows:**
 Open Device Manager → Ports (COM & LPT). Your converter will appear as
-something like "USB Serial Port (COM4)" or "Silicon Labs CP210x (COM7)".
-The COM number is what you need.
+something like "USB Serial Port (COM7)" or "Silicon Labs CP210x (COM7)".
+If nothing appears, install the driver for your converter's chipset:
 
-**Linux:**
-```
-ls /dev/ttyUSB* /dev/ttyACM*
-```
-Usually `/dev/ttyUSB0`. If nothing appears: `dmesg | grep tty` right after
-plugging in to see what the kernel named it.
+| Chip | Driver |
+|---|---|
+| FTDI FT232 | ftdi-chip.com / Windows Update |
+| Silicon Labs CP2102/CP2104 | silabs.com/developers/usb-to-uart-bridge-vcp-drivers |
+| WCH CH340/CH341 | wch.cn or search "ch340 driver" |
+| Prolific PL2303 | prolific.com.tw |
 
-Common chip driver names to look for in dmesg:
-- FTDI FT232: `ftdi_sio`
-- Silicon Labs CP2102: `cp210x`
-- WCH CH340/CH341: `ch341`
-- Prolific PL2303: `pl2303`
-
-**macOS:**
-```
-ls /dev/cu.usbserial*  /dev/cu.wchusbserial*
-```
+**Linux:** `ls /dev/ttyUSB*` — usually `/dev/ttyUSB0`
+**macOS:** `ls /dev/cu.usbserial*`
 
 ---
 
-## Step 1 — Loopback test (no PandaBox, just a jumper wire)
+## Step 1 — Loopback test (no PandaBox — just verify the USB converter)
 
-This confirms the USB converter works end-to-end before involving PandaBox.
+Short pin 2 (RXD) to pin 3 (TXD) on the DB9 connector with a jumper wire
+(or short TX to RX on screw terminals). This makes every byte you transmit
+come straight back to you.
 
-**Wire the loopback:**
-On the DB9 male connector side (the RS-232 side of your converter):
 ```
-Pin 2 (RXD) ←—— short with a wire ——→ Pin 3 (TXD)
+python tools\serial_loopback_test.py --port COM7 --baud 19200
 ```
-If your converter has a terminal block instead of DB9:
-- Short the TX screw terminal to the RX screw terminal.
-
-**Run the test:**
-```
-python3 tools/serial_loopback_test.py --port /dev/ttyUSB0 --baud 115200
-```
-Replace `/dev/ttyUSB0` with your actual port from Step 0.
 
 Expected: `ALL 5 LOOPBACK TESTS PASSED`
 
-If you get TIMEOUT: the jumper wire is missing or on wrong pins.
-If you get MISMATCH: wrong baud rate — try 9600 or 19200.
+If you get TIMEOUT: check the jumper wire / pins.
+If you get MISMATCH: try a different baud rate.
 
 ---
 
-## Step 2 — Connect to PandaBox and confirm wiring polarity
+## Step 2 — Wire to PandaBox (RS-232 crossover)
 
-RS-232 crossover wiring (what you need for a DTE-to-DTE connection, which
-is what this is — both the LCR simulator and PandaBox are data terminal
-equipment, not modems):
+Remove the loopback jumper. Connect to PandaBox DB25 J1:
 
 ```
-Simulator side (DB9)          PandaBox side (RS-232 header)
-─────────────────────         ──────────────────────────────
-Pin 2  RXD ────────────────── TXD  (PandaBox's transmit)
-Pin 3  TXD ────────────────── RXD  (PandaBox's receive)
-Pin 5  GND ────────────────── GND  (MUST be connected)
+Simulator side (USB-RS232 DB9)      PandaBox DB25 J1
+──────────────────────────────      ─────────────────
+Pin 2  RXD  ──────────────────────  Pin 14  TXD  (PandaBox transmits)
+Pin 3  TXD  ──────────────────────  Pin 15  RXD  (PandaBox receives)
+Pin 5  GND  ──────────────────────  Pin 11  GND  (mandatory reference)
 ```
 
-**The GND connection is mandatory.** An isolated converter only isolates
-the signal ground from the power ground — the RS-232 signal reference
-(pin 5) still needs to be common between the two devices or neither end
-can correctly read the other's signal levels.
+**GND is mandatory.** Without it, RS-232 signal levels reference nothing and
+neither end reads reliably.
 
-**If your converter is already a USB-to-RS232 adapter with a DB9 female
-connector**, and PandaBox has a DB9 male port: a straight-through DB9
-cable connects them correctly for DTE-to-DTE (pins 2-2, 3-3, 5-5).
-
-**If PandaBox has a custom RS-232 header (not DB9)**: check the PandaBox
-schematic for which pin is TXD, RXD, and GND, and connect accordingly.
+Hardware note: the BL13232 RS-232 transceiver (U603 area) is enabled by
+PE5=HIGH in firmware. The SIT3088EESA RS-485 transceiver (U4/U104) is
+enabled by PE6=HIGH. Only one should be active at a time — Leo's firmware
+keeps PE5 high for LCR Port 1 RS-232 operation.
 
 ---
 
-## Step 3 — Confirm PandaBox receives the heartbeat
-
-Remove the loopback jumper from Step 1. Connect to PandaBox.
+## Step 3 — Confirm the physical link with the heartbeat tool
 
 ```
-python3 tools/serial_heartbeat.py --port /dev/ttyUSB0 --baud 115200
+python tools\serial_heartbeat.py --port COM7 --baud 19200
 ```
 
-This sends one line per second:
-```
-LCR_SIM HEARTBEAT #00001 ts=14:32:01 baud=115200
-LCR_SIM HEARTBEAT #00002 ts=14:32:02 baud=115200
-...
-```
+This sends one line per second. On the PandaBox debug console (USART0,
+115200 8N1) you should see the bytes arriving on the LCR port RX pin.
+The heartbeat tool also prints any bytes PandaBox sends back.
 
-On the PandaBox side, capture whatever arrives on its serial RX:
-- If PandaBox has a debug UART or serial monitor mode, enable it.
-- If PandaBox has a raw-bytes capture mode for the LCR port, use that.
-- You should see the heartbeat lines arriving at 1 Hz.
-
-**If PandaBox receives nothing:**
-- Confirm GND is connected (step 2).
-- Try swapping TX and RX wires — if polarity is wrong you'll get nothing.
-- Try a different baud rate: `--baud 9600` first (most devices default to 9600).
-
-**If PandaBox receives garbage (wrong characters):**
-- Baud rate mismatch. Try 9600, then 19200, then 57600.
-- Parity mismatch (unlikely — 8N1 is universal for industrial RS-232).
-
-The heartbeat script also prints any bytes it receives from PandaBox, so
-you can see both directions at once.
+If nothing arrives: check GND, try swapping TX↔RX wires.
+If garbage arrives: baud rate mismatch — try 9600 then 38400.
 
 ---
 
-## Step 4 — Start the full simulator on your machine
+## Step 4 — Start the full LCP simulator
 
-Once the heartbeat confirms both directions work:
+Once the heartbeat confirms both directions:
 
 ```
-# Terminal 1: start the simulator
-python3 app.py
-
-# Terminal 2: open the browser
-# http://localhost:5000
-# Click "Serial" in the nav to get to the serial bridge panel
+python app.py
 ```
 
-In the Serial Bridge panel on the home page:
-1. Select your port from the dropdown.
-2. Set baud to match what worked in the heartbeat test.
-3. Mode: "Act as Meter" (the simulator responds to PandaBox's commands).
-4. Meter to simulate: whichever product (LCR-II, LCR 600, or LCR.iQ).
-5. Click "Start Bridge".
+Open `http://localhost:5000/serial` in your browser.
 
-The Live Monitor will show every byte received from PandaBox (as raw hex)
-and every byte the simulator sends back. Until the LCP protocol layer is
-filled in (see SIMULATION_NOTES.md and meter_core/serial_bridge.py), the
-simulator will NOT send protocol-level responses — but you'll see PandaBox's
-transmissions arriving, which confirms the physical link is working.
+In the Serial Bridge panel:
+1. **Port**: COM7 (or whichever port your converter is on)
+2. **Baud**: 19200 (must match PandaBox USART1/2 config)
+3. **Node**: 1 (PandaBox default LCR node)
+4. **Meter**: LCR-II (or LCR-600 / LCR.iQ)
+5. Click **Connect**
+
+The Live Monitor shows every LCP frame from PandaBox (← RX, blue)
+and every response the simulator sends back (→ TX, orange).
+The 7E 7E sync bytes are highlighted orange in the hex dump.
+The LCP Status banner shows live meter state: node, machine state
+(RUN/STOP/END), gross qty, flow rate, totalizer, preset, and frame counts.
 
 ---
 
-## Step 5 — Enable the LCP protocol layer (when ready)
+## Step 5 — Verify PandaBox session establishment
 
-Open `meter_core/serial_bridge.py` and look for the two stub functions at
-the bottom:
+PandaBox initiates the LCR session by sending:
+```
+7E 7E  [to=node]  [from=0x14]  [status=0x02]  [len=01]  [00]  [crc_lo crc_hi]
+```
+This is a Get Product ID command with `status=LCP_ST_SYNC` (0x02).
 
-```python
-def parse_frame(raw: bytes) -> Optional[dict]:
-    # STUB — fill in the actual LCP framing here
-    return None
-
-def build_response(parsed_cmd: dict, register_state: dict) -> bytes:
-    # STUB — fill in the actual response format here
-    return b""
+The simulator responds:
+```
+7E 7E  [to=0x14]  [from=node]  [status=0x80]  [len=0D]
+  [00]           ← RC_OK
+  [02]           ← device type
+  [SR200b2.05]  ← product ID string + null
+  [crc_lo crc_hi]
 ```
 
-Fill in `parse_frame` with the real LCP framing (SOF/EOF bytes, checksum
-algorithm, command ID extraction) from the LCP Host Interface Document.
-Fill in `build_response` to return the correct bytes for each command ID
-using values from `register_state` (which is the full `to_dict()` output
-from the simulator's active register — delivery total, k-factor, errors, etc).
-
-The LCP data type widths confirmed from the manuals are already in the file:
-```python
-LCP_TYPE_WIDTHS = {
-    "UINT1": 1, "UINT2": 2, "UINT4": 4,
-    "SINT1": 1, "SINT2": 2,
-    "BCD2": 2, "BCD4": 4,
-    "ASCII8": 8, "ASCII16": 16, "ASCII20": 20,
-}
-```
-
-Everything else (port management, threading, mode switching, the browser
-monitor) is already complete and will work immediately once those two
-functions return real data.
+After that PandaBox polls fields #2, #4, #17, #18, #100, #101 every ~1 second
+and the Live Monitor will show a steady stream of GetField frames and responses.
 
 ---
 
-## Baud rate reference from the LCR.iQ product manual
+## LCP field reference (polled by PandaBox)
 
-| Use case | Baud rate |
+| Field | Name | Format | Units |
+|---|---|---|---|
+| #2 | GrossQty | int32 BE | tenths of gallon |
+| #4 | FlowRate | int32 BE | tenths of gal/min |
+| #5 | GrossPreset | int32 BE | tenths of gallon (written by PandaBox) |
+| #17 | GrossTotal | int32 BE | tenths of gallon |
+| #18 | NetTotal | int32 BE | tenths of gallon |
+| #100 | PrevGross | int32 BE | totalizer at start of last delivery |
+| #101 | PrevNet | int32 BE | (always 0) |
+
+---
+
+## IssueCommand codes (sent by PandaBox)
+
+| Code | Action |
 |---|---|
-| LCP service (default) | 115200 |
-| Epson printer | 9600 |
-| Available options | 9600 / 19200 / 115200 |
-
-The LCR-II and LCR-600 manuals document RS-232 (EIA-232E) and RS-485
-(SAE J1708) at configurable rates; 9600 is the traditional default for
-LCR-II field installations, but your specific PandaBox firmware may use
-a different rate — check the PandaBox serial configuration screen or the
-source code for `UART_BAUD` or similar.
+| 0 | Start delivery / Resume from pause |
+| 1 | Pause delivery |
+| 2 | End delivery + generate ticket |
+| 6 | Print last ticket |
 
 ---
 
-## Checklist summary
+## Baud rate reference
 
-- [ ] USB converter appears in device list (Step 0)
-- [ ] Loopback test passes at target baud rate (Step 1)
-- [ ] GND connected between simulator machine and PandaBox (Step 2)
-- [ ] Heartbeat lines appear on PandaBox's RX side (Step 3)
-- [ ] Heartbeat script shows PandaBox's TX bytes arriving too (Step 3)
-- [ ] Serial bridge starts in the simulator UI without error (Step 4)
-- [ ] Live Monitor shows incoming bytes from PandaBox (Step 4)
-- [ ] LCP parse_frame and build_response filled in (Step 5, when spec available)
+| Connection | Baud |
+|---|---|
+| PandaBox LCR Port 1/2 (USART1/2) | **19200 8N1** |
+| PandaBox debug console (USART0) | 115200 8N1 |
+| Loopback test (converter self-test) | any — use 19200 to match |
+
+---
+
+## Checklist
+
+- [ ] USB converter appears in Device Manager as COMx (Step 0)
+- [ ] Driver installed (Step 0)
+- [ ] Loopback test passes at 19200 baud (Step 1)
+- [ ] GND connected between PC and PandaBox J1 pin 11 (Step 2)
+- [ ] Heartbeat visible on PandaBox console (Step 3)
+- [ ] Heartbeat script shows PandaBox TX bytes arriving (Step 3)
+- [ ] `python app.py` starts without error (Step 4)
+- [ ] Serial Monitor shows port CONNECTED (Step 4)
+- [ ] LCP session starts: GetProductID frame + response in monitor (Step 5)
+- [ ] Poll frames (#2, #4, #17...) visible at ~1 Hz (Step 5)

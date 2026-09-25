@@ -4,10 +4,12 @@ Flask/HTML layer is added. Not a formal pytest suite; just a sequential
 script that exercises each documented behavior and asserts it matches the
 skill's source material, printing PASS/FAIL per check.
 """
+import os
 import sys
 import time
 
-sys.path.insert(0, "/home/claude/lcr-sim")
+# Ensure meter_core is importable when the script is run from any directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from meter_core import LCR2Register, LCR600Register, LCRiQRegister, RegisterError
 from meter_core.rtd_vcf import temp_c_to_ohms, ohms_to_temp_c, rtd_continuity_ok, vcf_factor
@@ -287,6 +289,44 @@ r11.reprint_last_ticket()
 check("reprint after a real ticket exists succeeds without raising", True)
 check("reprint does not fabricate a new/different ticket", r11.last_ticket == ticket_before)
 check("reprint sets delivery_pending_print", r11.delivery_pending_print is True)
+
+print()
+print("=== V5 LCP protocol: frame build/parse self-test (5 vectors from protocol doc) ===")
+from meter_core.lcp import selftest as lcp_selftest, build as lcp_build, parse as lcp_parse
+from meter_core.lcp import LCP_HOST, LCP_ST_SYNC
+from meter_core.lcp_endpoint import LcpEndpoint
+
+lcp_fails = lcp_selftest()
+check("all 5 LCP self-test vectors match (build + parse round-trip)", lcp_fails == 0)
+
+# GetProductID via LcpEndpoint attached to a real register
+ep = LcpEndpoint(node=1)
+ep.attach(lambda: LCR2Register())
+frame = lcp_build(1, LCP_HOST, LCP_ST_SYNC, b'\x00')
+resp = ep.handle_frame(frame)
+parsed = lcp_parse(resp)
+check("LcpEndpoint responds to GetProductID", parsed is not None)
+if parsed:
+    _, _, _, pay = parsed
+    check("GetProductID rc=OK", pay[0] == 0)
+    check("GetProductID product_id = SR200b2.05", pay[2:].rstrip(b'\x00') == b'SR200b2.05')
+
+# GetField #2 (GrossQty) with no active delivery must return 0
+import struct
+frame2 = lcp_build(1, LCP_HOST, 0x01, bytes([0x20, 2]))
+resp2 = ep.handle_frame(frame2)
+p2 = lcp_parse(resp2)
+check("LcpEndpoint responds to GetField #2", p2 is not None)
+if p2:
+    _, _, _, pay2 = p2
+    gross = struct.unpack('>i', pay2[2:6])[0]
+    check("GetField #2 GrossQty = 0 when no delivery active", gross == 0)
+
+# _gross_total_tenths property on register
+r_lcp = LCR2Register()
+check("register._gross_total_tenths starts at 50000 (5000.0 gal base)", r_lcp._gross_total_tenths == 50000)
+check("register._delivery_units is alias for delivery_total_units", r_lcp._delivery_units == r_lcp.delivery_total_units)
+check("Product.preset_units field exists", hasattr(r_lcp.active_product(), 'preset_units'))
 
 print()
 print(f"=== RESULT: {passed} passed, {failed} failed ===")
